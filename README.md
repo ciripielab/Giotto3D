@@ -1,4 +1,4 @@
-# Giotto3D
+# Giotto3D 0.0.1
 
 Single-page demo per visualizzare un modello 3D con hotspot editabili (sphere/box/cylinder) tramite Three.js. Include un pannello di controllo per emulare lo stato condiviso di Giotto, esportare/importare JSON e monitorare gli eventi generati dal viewer.
 
