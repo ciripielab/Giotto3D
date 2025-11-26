@@ -3,9 +3,12 @@
 // limiti dinamici dal bbox, selezione/deselezione in View Mode,
 // e TRASLAZIONE tramite 3 slider ΔX/ΔY/ΔZ (baseline = origine hotspot).
 
-import * as THREE from 'https://esm.sh/three@0.178.0';
-import { GLTFLoader } from 'https://esm.sh/three@0.178.0/examples/jsm/loaders/GLTFLoader.js';
-import { OrbitControls } from 'https://esm.sh/three@0.178.0/examples/jsm/controls/OrbitControls.js';
+// hotspot3d-viewer.js
+import * as THREE from 'three';
+import { GLTFLoader }   from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
 
 const HOTSPOT_SELECTED_COLOR  = 0xffa500;
 const HOTSPOT_HIGHLIGHT_COLOR = 0xff0000;
