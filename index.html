@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <title>Giotto Emulator + Hotspot3DViewer (single instance)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      display: grid; grid-template-columns: 70% 30%; height: 100%;
+    }
+
+    /* Sinistra: area 3D */
+    #left {
+      display: grid; grid-template-rows: auto 1fr; gap: 8px; padding: 8px;
+      background: #111;
+    }
+    header {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: #fff;
+      color: #111;
+      padding: 8px 10px;
+      border-radius: 10px;
+    }
+    header .title { font-weight: 700; }
+    .viewer {
+      position: relative; background: #000; border-radius: 10px; overflow: hidden;
+      min-height: 400px;
+    }
+
+    /* Destra: Giotto Emulator */
+    #right {
+      display: grid; grid-template-rows: auto 1fr; gap: 8px;
+      padding: 8px; background: canvas; color: canvastext;
+    }
+    .card {
+      background: #fff; color: #111; padding: 10px; border-radius: 10px;
+      border: 1px solid #00000022;
+    }
+    #panel { display: grid; gap: 8px; }
+    #panel h2 { margin: 0; font-size: 1rem; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+    button, select, input[type="color"] {
+      font: inherit; padding: .45rem .65rem; border-radius: .5rem; cursor: pointer;
+      border: 1px solid #00000030; background: #f6f6f6;
+    }
+    button:hover { background: #eee; }
+
+    .badge {
+      padding: .15rem .4rem; border-radius: .5rem;
+      background: #e7f0ff; border: 1px solid #7aa6ff55; font-size: .75rem;
+    }
+    .spacer { flex: 1; }
+    small { opacity: .7; }
+    label.inline { display:flex; align-items:center; gap:6px; }
+
+    /* Stato JSON */
+    #stateBox {
+      background: #fafafa; border: 1px solid #00000022; border-radius: 8px;
+      padding: 8px; overflow: auto; min-height: 160px; max-height: 35vh;
+    }
+    pre { margin: 0; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9rem; line-height: 1.3; }
+
+    /* Messaggi */
+    #msgBox {
+      background: #fafbff; border: 1px solid #7aa6ff55; border-radius: 8px;
+      padding: 8px; min-height: 80px; max-height: 25vh; overflow: auto;
+    }
+    #msgBox .item {
+      display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline;
+      padding: 4px 0; border-bottom: 1px dashed #0001;
+    }
+    #msgBox .item:last-child { border-bottom: none; }
+    #msgBox .ts { font-size: .75rem; opacity: .6; }
+    #msgBox .text { font-size: .9rem; }
+
+    /* (opzionale) stile select shape */
+    #shape-select { min-width: 140px; }
+  </style>
+</head>
+<body>
+  <!-- SINISTRA: 3D viewer -->
+  <section id="left">
+    <header class="card">
+      <span class="title">Hotspot3DViewer</span>
+      <span id="modeBadgeLeft" class="badge">mode: view</span>
+      <div class="spacer"></div>
+    </header>
+    <div id="viewer" class="viewer"></div>
+  </section>
+
+  <!-- DESTRA: Giotto Emulator -->
+  <section id="right">
+    <div id="panel" class="card">
+      <div class="row">
+        <h2>Giotto Emulator</h2>
+        <div class="spacer"></div>
+      </div>
+
+      <div class="row">
+        <button id="btn-load">Load Model (URL)</button>
+        <button id="btn-init">Init</button>
+        <button id="btn-view">View Mode</button>
+        <button id="btn-edit">Edit Mode</button>
+        <label>Shape:
+          <select id="shape-select">
+            <option value="sphere" selected>Sphere</option>
+            <option value="box">Box</option>
+            <option value="cylinder">Cylinder</option>
+          </select>
+        </label>
+        <button id="btn-sync">Request Sync</button>
+        <button id="btn-reset">Reset</button>
+      </div>
+
+      <div class="row">
+        <label class="inline">Background:
+          <input type="color" id="bgColor" value="#f0f0f0" />
+        </label>
+        <button id="btn-bg-apply">Applica</button>
+        <small>(non salvato nello shared JSON)</small>
+      </div>
+
+      <div class="row">
+        <button id="btn-download">Download JSON</button>
+        <input type="file" id="importInput" accept="application/json,.json" style="display:none" />
+        <button id="btn-import">Import JSON</button>
+      </div>
+
+      <div id="stateBox">
+        <pre id="state">{}</pre>
+      </div>
+      <small id="meta">–</small>
+    </div>
+
+    <!-- CARD MESSAGGI -->
+    <div class="card">
+      <h3 style="margin:0 0 8px 0; font-size:1rem;">Messaggi</h3>
+      <div id="msgBox"></div>
+    </div>
+  </section>
+
+  <script type="module" src="./giottoemulator.js"></script>
+</body>
+</html>
