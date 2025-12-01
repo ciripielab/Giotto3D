@@ -1,14 +1,15 @@
 // hotspot3d-viewer.js
-// Classe istanziabile con: Sphere/Box/Cylinder, resize/rot, colore,
-// limiti dinamici dal bbox, selezione/deselezione in View Mode,
-// e TRASLAZIONE tramite 3 slider ΔX/ΔY/ΔZ (baseline = origine hotspot).
+// Viewer 3D istanziabile con:
+// - Sphere / Box / Cylinder
+// - resize, rotazioni, colore
+// - limiti dinamici dal bbox del modello
+// - traslazione via slider ΔX/ΔY/ΔZ
+// - TransformControls (gizmo 3D) con modalità: translate / rotate / scale
 
-// hotspot3d-viewer.js
 import * as THREE from 'three';
 import { GLTFLoader }   from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-
 
 const HOTSPOT_SELECTED_COLOR  = 0xffa500;
 const HOTSPOT_HIGHLIGHT_COLOR = 0xff0000;
@@ -46,7 +47,7 @@ export class Hotspot3DViewer {
     this.pendingModelUrl = '';
 
     // hotspot + selezione
-    this.hotspots = {}; // id -> Mesh (userData: { shape, dims, rot?, color })
+    this.hotspots = {}; // id -> Mesh
     this.selectedHotspotId = null;
 
     // input
@@ -65,14 +66,27 @@ export class Hotspot3DViewer {
       maxBox: { x: 1.0, y: 1.0, z: 1.0 },
       maxCylinder: { r: 0.6, h: 1.0 }
     };
-    // bounds del modello (per eventuali clamp/visualizzazione)
-    this.modelBounds = { min: new THREE.Vector3(-1,-1,-1), max: new THREE.Vector3(1,1,1), center: new THREE.Vector3(), size: new THREE.Vector3(2,2,2) };
+    this.modelBounds = {
+      min: new THREE.Vector3(-1,-1,-1),
+      max: new THREE.Vector3( 1, 1, 1),
+      center: new THREE.Vector3(0,0,0),
+      size: new THREE.Vector3(2,2,2)
+    };
 
     // UI refs
     this.ui = null;
 
     // baseline per traslazione (origine hotspot quando selezionato)
     this.translateOrigin = new THREE.Vector3(0,0,0);
+
+    // TransformControls + helper
+    this.transformControls = null;
+    this.transformHelper   = null;
+
+    // stato del toggle gizmo nella UI
+    this.gizmoEnabled = false;
+    // modalità del gizmo: 'translate' | 'rotate' | 'scale'
+    this.gizmoMode = 'translate';
 
     // setup
     this._initScene(background);
@@ -165,6 +179,9 @@ export class Hotspot3DViewer {
   setMode(mode) {
     this.currentMode = mode === 'edit' ? 'edit' : (mode === 'hide' ? 'hide' : 'view');
     if (this.currentMode !== 'edit') this._hideUI();
+
+    this._updateTransformControls();
+
     this._emit({ type: 'onModeApplied', payload: { mode: this.currentMode } });
     this._syncAll();
   }
@@ -227,6 +244,141 @@ export class Hotspot3DViewer {
     this._resizeObserver = new ResizeObserver(() => this._updateRendererSize());
     this._resizeObserver.observe(this.container);
     window.addEventListener('resize', this._updateRendererSize);
+
+    // TransformControls: uso l'helper per evitare l'errore Object3D.add
+    this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
+    this.transformControls.setMode(this.gizmoMode);
+    this.transformControls.setTranslationSnap(null);
+    this.transformControls.size = 0.9;
+
+    // r181+: getHelper(); se non c’è, uso direttamente il controller
+    this.transformHelper = (typeof this.transformControls.getHelper === 'function')
+      ? this.transformControls.getHelper()
+      : this.transformControls;
+
+    if (this.transformHelper && this.transformHelper.isObject3D) {
+      this.scene.add(this.transformHelper);
+      this.transformHelper.visible = false;
+    }
+
+    // disabilita OrbitControls durante il drag
+    this.transformControls.addEventListener('dragging-changed', (ev) => {
+      this.controls.enabled = !ev.value;
+    });
+
+
+    // SYNC live durante spostamento / rotazione / scala
+    this.transformControls.addEventListener('objectChange', () => {
+      if (!this.selectedHotspotId) return;
+      const mesh = this.hotspots[this.selectedHotspotId];
+      if (!mesh) return;
+
+      // ---- SCALA UNIFORME PER SPHERE ----
+      if (this.gizmoMode === 'scale' && mesh.userData.shape === 'sphere') {
+        const sx = mesh.scale.x || 1;
+        const sy = mesh.scale.y || 1;
+        const sz = mesh.scale.z || 1;
+        const s  = (sx + sy + sz) / 3;   // fattore medio
+        mesh.scale.set(s, s, s);         // scala sempre uniforme
+      }
+
+      // ---- SCALA "CILINDRO" PER CYLINDER ----
+      if (this.gizmoMode === 'scale' && mesh.userData.shape === 'cylinder') {
+        const sx = mesh.scale.x || 1;
+        const sy = mesh.scale.y || 1;
+        const sz = mesh.scale.z || 1;
+
+        // raggio: media di X e Z → base sempre circolare
+        const radial = (sx + sz) / 2;
+
+        // altezza: asse Y così com'è
+        mesh.scale.set(radial, sy, radial);
+      }
+
+      this._syncAll();
+    });
+
+
+    // commit al rilascio → onHotspotUpdated / resize / rot
+    this.transformControls.addEventListener('mouseUp', () => {
+      if (!this.selectedHotspotId) return;
+      const mesh = this.hotspots[this.selectedHotspotId];
+      if (!mesh) return;
+
+      const ud = mesh.userData || {};
+
+      // GIZMO MODE: SCALE → aggiorna dims e ricrea geometria
+      if (this.gizmoMode === 'scale') {
+        const sx = mesh.scale.x || 1;
+        const sy = mesh.scale.y || 1;
+        const sz = mesh.scale.z || 1;
+
+        if (ud.shape === 'sphere') {
+          const s = (sx + sy + sz) / 3;
+          const newR = (ud.dims?.r || DEFAULT_SPHERE_R) * s;
+          mesh.scale.set(1,1,1);
+          this._resizeSelectedSphere(newR, true);
+          return; // _resizeSelectedSphere fa già onHotspotUpdated + SYNC
+        } else if (ud.shape === 'box') {
+          const base = ud.dims || DEFAULT_BOX;
+          const dims = {
+            x: base.x * sx,
+            y: base.y * sy,
+            z: base.z * sz
+          };
+          mesh.scale.set(1,1,1);
+          this._resizeSelectedBox(dims, true);
+          return;
+        } else if (ud.shape === 'cylinder') {
+          const base = ud.dims || DEFAULT_CYL;
+          const radialS = (sx + sz) / 2;
+          const dims = {
+            r: base.r * radialS,
+            h: base.h * sy
+          };
+          mesh.scale.set(1,1,1);
+          this._resizeSelectedCylinder(dims, true);
+          return;
+        }
+      }
+
+      // GIZMO MODE: ROTATE → aggiorna userData.rot
+      if (this.gizmoMode === 'rotate') {
+        if (ud.shape === 'box' || ud.shape === 'cylinder') {
+          ud.rot = {
+            x: mesh.rotation.x * RAD2DEG,
+            y: mesh.rotation.y * RAD2DEG,
+            z: mesh.rotation.z * RAD2DEG,
+          };
+          mesh.userData.rot = ud.rot;
+        }
+      }
+
+      // GIZMO MODE: TRANSLATE (o generico) → aggiorna posizione
+      const p = mesh.position;
+      const payload = {
+        Id: this.selectedHotspotId,
+        X: p.x, Y: p.y, Z: p.z,
+        shape: ud.shape,
+        dims: { ...(ud.dims || {}) },
+        color: ud.color
+      };
+      if (ud.rot) payload.rot = { ...ud.rot };
+      this._emit({ type: 'onHotspotUpdated', payload });
+
+      // aggiorna baseline per slider Δ
+      this.translateOrigin.copy(p);
+      if (this.ui?.pos) {
+        this.ui.pos.x.slider.value = '0';
+        this.ui.pos.y.slider.value = '0';
+        this.ui.pos.z.slider.value = '0';
+        this.ui.pos.x.val.textContent = '0';
+        this.ui.pos.y.val.textContent = '0';
+        this.ui.pos.z.val.textContent = '0';
+      }
+
+      this._syncAll();
+    });
   }
 
   _updateRendererSize = () => {
@@ -268,11 +420,12 @@ export class Hotspot3DViewer {
     return { row, value };
   }
 
+
   _mountUI() {
     const root = document.createElement('div');
     Object.assign(root.style, {
       position: 'absolute', right: '12px', top: '12px', zIndex: '10',
-      minWidth: '260px', maxWidth: '340px',
+      minWidth: '260px', maxWidth: '360px',
       background: 'rgba(255,255,255,0.9)', color: '#111',
       borderRadius: '10px', padding: '10px 12px',
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
@@ -284,6 +437,81 @@ export class Hotspot3DViewer {
     title.style.fontSize = '14px';
     title.textContent = 'Hotspot';
     root.appendChild(title);
+
+    // ========== TOP BAR: Gizmo + Mode ==========
+    const topBar = document.createElement('div');
+    Object.assign(topBar.style, {
+      display: 'flex',
+      gap: '8px',
+      alignItems: 'center',
+      marginBottom: '8px',
+      flexWrap: 'wrap'
+    });
+
+    // Toggle Gizmo
+    const btnGizmo = document.createElement('button');
+    btnGizmo.textContent = 'Gizmo OFF';
+    Object.assign(btnGizmo.style, {
+      padding: '.35rem .6rem',
+      border: '1px solid #00000030',
+      background: '#f0f0f0',
+      borderRadius: '.5rem',
+      cursor: 'pointer',
+      fontSize: '12px',
+      whiteSpace: 'nowrap'
+    });
+
+    const updateGizmoButtonUI = () => {
+      if (this.gizmoEnabled) {
+        btnGizmo.textContent = 'Gizmo ON';
+        btnGizmo.style.background = '#d1f5d3';
+        btnGizmo.style.borderColor = '#58b965';
+      } else {
+        btnGizmo.textContent = 'Gizmo OFF';
+        btnGizmo.style.background = '#f0f0f0';
+        btnGizmo.style.borderColor = '#00000030';
+      }
+    };
+    updateGizmoButtonUI();
+
+    btnGizmo.addEventListener('click', () => {
+      this.gizmoEnabled = !this.gizmoEnabled;
+      updateGizmoButtonUI();
+      this._updateTransformControls();
+    });
+
+    // Select modalità gizmo
+    const modeLabel = document.createElement('span');
+    modeLabel.textContent = 'Mode';
+    modeLabel.style.fontSize = '12px';
+    modeLabel.style.opacity = '.8';
+
+    const modeSelect = document.createElement('select');
+    Object.assign(modeSelect.style, {
+      fontSize: '12px',
+      padding: '2px 4px',
+      borderRadius: '6px',
+      border: '1px solid #00000030',
+      background: '#ffffff'
+    });
+    modeSelect.innerHTML = `
+      <option value="translate">Translate</option>
+      <option value="rotate">Rotate</option>
+      <option value="scale">Scale</option>
+    `;
+    modeSelect.value = this.gizmoMode;
+
+    modeSelect.addEventListener('change', () => {
+      this.gizmoMode = modeSelect.value;
+      if (this.transformControls) this.transformControls.setMode(this.gizmoMode);
+      this._updateTransformControls();
+    });
+
+    topBar.appendChild(btnGizmo);
+    topBar.appendChild(modeLabel);
+    topBar.appendChild(modeSelect);
+    root.appendChild(topBar);
+    // ========== FINE TOP BAR ==========
 
     // --- blocco POSITION (ΔX ΔY ΔZ) ---
     const posBlock = document.createElement('div');
@@ -357,18 +585,43 @@ export class Hotspot3DViewer {
     colorInput.style.borderRadius = '6px';
     colorBlock.appendChild(colorLabel); colorBlock.appendChild(colorInput);
 
-    // --- Actions ---
+    // --- Actions (solo Delete + Close) ---
     const actions = document.createElement('div');
-    Object.assign(actions.style, { display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '8px' });
+    Object.assign(actions.style, {
+      display: 'flex',
+      gap: '8px',
+      justifyContent: 'flex-end',
+      marginTop: '8px'
+    });
+
     const btnDelete = document.createElement('button');
     btnDelete.textContent = 'Delete';
-    Object.assign(btnDelete.style, { padding: '.35rem .6rem', border: '1px solid #ff8a8a', background: '#ffe6e6', borderRadius: '.5rem', cursor: 'pointer' });
+    Object.assign(btnDelete.style, {
+      padding: '.35rem .6rem',
+      border: '1px solid #ff8a8a',
+      background: '#ffe6e6',
+      borderRadius: '.5rem',
+      cursor: 'pointer',
+      fontSize: '12px',
+      whiteSpace: 'nowrap'
+    });
     btnDelete.addEventListener('mouseenter', () => { btnDelete.style.background = '#ffd6d6'; });
     btnDelete.addEventListener('mouseleave', () => { btnDelete.style.background = '#ffe6e6'; });
+
     const btnClose = document.createElement('button');
     btnClose.textContent = 'Chiudi';
-    Object.assign(btnClose.style, { padding: '.35rem .6rem', border: '1px solid #00000030', background: '#f6f6f6', borderRadius: '.5rem', cursor: 'pointer' });
-    actions.appendChild(btnDelete); actions.appendChild(btnClose);
+    Object.assign(btnClose.style, {
+      padding: '.35rem .6rem',
+      border: '1px solid #00000030',
+      background: '#f6f6f6',
+      borderRadius: '.5rem',
+      cursor: 'pointer',
+      fontSize: '12px',
+      whiteSpace: 'nowrap'
+    });
+
+    actions.appendChild(btnDelete);
+    actions.appendChild(btnClose);
 
     // Compose UI
     root.appendChild(posBlock);
@@ -407,14 +660,20 @@ export class Hotspot3DViewer {
         z: { slider: rotZ, val: rotRowZ.value },
       },
       color: { block: colorBlock, input: colorInput },
-      btnDelete, btnClose
+      btnDelete, btnClose,
+      btnGizmo,
+      updateGizmoButtonUI,
+      modeSelect
     };
 
-    // listeners
+    // listeners UI
     btnClose.addEventListener('click', () => this._hideUI());
-    btnDelete.addEventListener('click', () => { if (this.selectedHotspotId) this._removeHotspot(this.selectedHotspotId); });
+    btnDelete.addEventListener('click', () => {
+      if (this.selectedHotspotId) this._removeHotspot(this.selectedHotspotId);
+    });
 
-    // --- TRASLAZIONE: slider ΔX/ΔY/ΔZ ---
+
+    // --- TRASLAZIONE ΔX/ΔY/ΔZ, resize, rot, colore ---
     const updatePosLabels = () => {
       this.ui.pos.x.val.textContent = this.ui.pos.x.slider.value;
       this.ui.pos.y.val.textContent = this.ui.pos.y.slider.value;
@@ -434,7 +693,6 @@ export class Hotspot3DViewer {
     this.ui.pos.y.slider.addEventListener('change', onPosCommit);
     this.ui.pos.z.slider.addEventListener('change', onPosCommit);
 
-    // --- sphere resize ---
     const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
     sphereSlider.addEventListener('input', () => {
       let r = Number(sphereSlider.value);
@@ -450,7 +708,6 @@ export class Hotspot3DViewer {
       this._resizeSelectedSphere(r, true);
     });
 
-    // --- box dims ---
     const onBoxInput = () => {
       let dims = { x: +this.ui.box.x.slider.value, y: +this.ui.box.y.slider.value, z: +this.ui.box.z.slider.value };
       dims = this._clampDimsToLimits('box', dims);
@@ -477,7 +734,6 @@ export class Hotspot3DViewer {
     this.ui.box.y.slider.addEventListener('change', onBoxCommit);
     this.ui.box.z.slider.addEventListener('change', onBoxCommit);
 
-    // --- cylinder dims ---
     const onCylInput = () => {
       let dims = { r: +this.ui.cyl.r.slider.value, h: +this.ui.cyl.h.slider.value };
       dims = this._clampDimsToLimits('cylinder', dims);
@@ -499,7 +755,6 @@ export class Hotspot3DViewer {
     this.ui.cyl.r.slider.addEventListener('change', onCylCommit);
     this.ui.cyl.h.slider.addEventListener('change', onCylCommit);
 
-    // --- rot (box/cylinder) ---
     const onRotInput = () => {
       const rot = { x: +this.ui.rot.x.slider.value, y: +this.ui.rot.y.slider.value, z: +this.ui.rot.z.slider.value };
       this.ui.rot.x.val.textContent = String(rot.x);
@@ -518,7 +773,6 @@ export class Hotspot3DViewer {
     this.ui.rot.y.slider.addEventListener('change', onRotCommit);
     this.ui.rot.z.slider.addEventListener('change', onRotCommit);
 
-    // --- colore ---
     const onColorChange = () => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh) return;
@@ -543,6 +797,7 @@ export class Hotspot3DViewer {
     this.container.appendChild(root);
     this._applyLimitsToUI();
   }
+
 
   _bindEvents() {
     const dom = this.renderer.domElement;
@@ -608,6 +863,10 @@ export class Hotspot3DViewer {
   }
 
   _clearHotspots() {
+    if (this.transformControls && this.transformHelper) {
+      this.transformControls.detach();
+      this.transformHelper.visible = false;
+    }
     Object.values(this.hotspots).forEach((mesh) => {
       this.scene.remove(mesh);
       mesh.geometry.dispose();
@@ -665,6 +924,11 @@ export class Hotspot3DViewer {
     const mesh = this.hotspots[id];
     if (!mesh) return;
 
+    if (this.transformControls && this.transformHelper && this.selectedHotspotId === id) {
+      this.transformControls.detach();
+      this.transformHelper.visible = false;
+    }
+
     this.scene.remove(mesh);
     mesh.geometry.dispose();
     mesh.material.dispose();
@@ -688,6 +952,7 @@ export class Hotspot3DViewer {
     if (!id || !this.hotspots[id]) {
       this.selectedHotspotId = null;
       this._hideUI();
+      this._updateTransformControls();
       if (notify) this._emit({ type: 'onHotspotSelected', payload: { Id: null } });
       this._syncAll();
       return;
@@ -697,7 +962,7 @@ export class Hotspot3DViewer {
     mesh.material.color.set(color);
     this.selectedHotspotId = id;
 
-    // Aggiorna baseline di traslazione (origine) e reset slider Δ a 0
+    // aggiorna baseline di traslazione e reset slider Δ
     this.translateOrigin.copy(mesh.position);
     if (this.ui?.pos) {
       this.ui.pos.x.slider.value = '0';
@@ -708,10 +973,32 @@ export class Hotspot3DViewer {
       this.ui.pos.z.val.textContent = '0';
     }
 
+    this._updateTransformControls();
+
     if (notify) this._emit({ type: 'onHotspotSelected', payload: { Id: id } });
     this._syncAll();
 
     if (this.currentMode === 'edit') this._showUIFor(mesh);
+  }
+
+  _updateTransformControls() {
+    if (!this.transformControls || !this.transformHelper) return;
+
+    const canShow =
+      this.currentMode === 'edit' &&
+      this.gizmoEnabled &&        // toggle UI
+      this.selectedHotspotId &&
+      this.hotspots[this.selectedHotspotId];
+
+    if (canShow) {
+      const mesh = this.hotspots[this.selectedHotspotId];
+      this.transformControls.attach(mesh);
+      this.transformControls.setMode(this.gizmoMode);
+      this.transformHelper.visible = true;
+    } else {
+      this.transformControls.detach();
+      this.transformHelper.visible = false;
+    }
   }
 
   _createHotspot(id, pos, shape = 'sphere', dims = { r: DEFAULT_SPHERE_R }, rotDeg /* opzionale */, colorHex = DEFAULT_HOTSPOT_HEX) {
@@ -830,6 +1117,9 @@ export class Hotspot3DViewer {
     this.ui.color.block.style.display = 'block';
     this.ui.color.input.value = baseHex;
 
+    // modalità selezionata sul select
+    if (this.ui.modeSelect) this.ui.modeSelect.value = this.gizmoMode;
+
     this.ui.root.style.display = 'block';
   }
 
@@ -856,11 +1146,12 @@ export class Hotspot3DViewer {
       this.translateOrigin.y + dy,
       this.translateOrigin.z + dz
     );
-
-    // (opzionale) clamp in base ai bounds del modello.
-    // Semplificato: lasciamo libero per ora; puoi abilitare un clamp conservativo qui.
-
     mesh.position.copy(newPos);
+
+    // il gizmo segue l'oggetto se è attivo
+    if (this.transformControls && this.currentMode === 'edit' && this.gizmoEnabled) {
+      this.transformControls.attach(mesh);
+    }
 
     if (commit) {
       const p = mesh.position;
@@ -872,9 +1163,18 @@ export class Hotspot3DViewer {
       };
       if (mesh.userData.rot) payload.rot = { ...mesh.userData.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
+
+      // aggiorna baseline e reset Δ
+      this.translateOrigin.copy(p);
+      this.ui.pos.x.slider.value = '0';
+      this.ui.pos.y.slider.value = '0';
+      this.ui.pos.z.slider.value = '0';
+      this.ui.pos.x.val.textContent = '0';
+      this.ui.pos.y.val.textContent = '0';
+      this.ui.pos.z.val.textContent = '0';
     }
 
-    this._syncAll(); // sempre SYNC (live e a commit)
+    this._syncAll();
   }
 
   _resizeSelectedSphere(r, commit) {
@@ -890,7 +1190,10 @@ export class Hotspot3DViewer {
     mesh.userData.dims = { r };
 
     if (commit) {
-      this._emit({ type: 'onHotspotUpdated', payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'sphere', dims: { r }, color: mesh.userData.color } });
+      this._emit({
+        type: 'onHotspotUpdated',
+        payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'sphere', dims: { r }, color: mesh.userData.color }
+      });
     }
     this._syncAll();
   }
@@ -911,7 +1214,10 @@ export class Hotspot3DViewer {
     mesh.rotation.set(rx, ry, rz);
 
     if (commit) {
-      this._emit({ type: 'onHotspotUpdated', payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'box', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color } });
+      this._emit({
+        type: 'onHotspotUpdated',
+        payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'box', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
+      });
     }
     this._syncAll();
   }
@@ -932,7 +1238,10 @@ export class Hotspot3DViewer {
     mesh.rotation.set(rx, ry, rz);
 
     if (commit) {
-      this._emit({ type: 'onHotspotUpdated', payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'cylinder', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color } });
+      this._emit({
+        type: 'onHotspotUpdated',
+        payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'cylinder', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
+      });
     }
     this._syncAll();
   }
@@ -963,7 +1272,6 @@ export class Hotspot3DViewer {
       this.modelLimits.maxBox = { x: 1.0, y: 1.0, z: 1.0 };
       this.modelLimits.maxCylinder = { r: 0.6, h: 1.0 };
 
-      // bounds fallback
       this.modelBounds.min.set(-1,-1,-1);
       this.modelBounds.max.set( 1, 1, 1);
       this.modelBounds.center.set(0,0,0);
@@ -990,13 +1298,12 @@ export class Hotspot3DViewer {
     this.modelLimits.maxBox = maxBox;
     this.modelLimits.maxCylinder = maxCylinder;
 
-    // salva bounds
     this.modelBounds.min.copy(box.min);
     this.modelBounds.max.copy(box.max);
     this.modelBounds.center.copy(center);
     this.modelBounds.size.copy(size);
 
-    // opzionale: adegua range degli slider Δ a ~mezzo bbox (così hai leve utili)
+    // adegua range per slider Δ a ~mezzo bbox
     const half = Math.max(size.x, size.y, size.z) * 0.5 || 1;
     if (this.ui?.pos) {
       const setRange = (sl) => { sl.min = (-half).toFixed(3); sl.max = (half).toFixed(3); };
