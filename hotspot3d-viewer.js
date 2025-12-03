@@ -1,10 +1,15 @@
 // hotspot3d-viewer.js
 // Viewer 3D istanziabile con:
 // - Sphere / Box / Cylinder
-// - resize, rotazioni, colore
+// - resize (solo input numerici), rotazioni, colore
 // - limiti dinamici dal bbox del modello
-// - traslazione via slider ΔX/ΔY/ΔZ
-// - TransformControls (gizmo 3D) con modalità: translate / rotate / scale
+// - TransformControls (gizmo 3D): translate / rotate / scale
+// - Position: X/Y/Z con input + +/-
+// - Rotation: rot X/Y/Z con input + +/- (solo box/cylinder)
+// - Scale: 
+//   - sphere: Raggio
+//   - box: Scale X/Y/Z
+//   - cylinder: Raggio + Altezza
 
 import * as THREE from 'three';
 import { GLTFLoader }   from 'three/addons/loaders/GLTFLoader.js';
@@ -23,6 +28,10 @@ const DEFAULT_HOTSPOT_HEX = '#00ff00';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
+
+const POSITION_STEP = 0.01;
+const ROT_STEP = 1; // gradi per click su +/- rotazione
+const SCALE_STEP = 0.01;
 
 export class Hotspot3DViewer {
   /**
@@ -75,9 +84,6 @@ export class Hotspot3DViewer {
 
     // UI refs
     this.ui = null;
-
-    // baseline per traslazione (origine hotspot quando selezionato)
-    this.translateOrigin = new THREE.Vector3(0,0,0);
 
     // TransformControls + helper
     this.transformControls = null;
@@ -266,7 +272,6 @@ export class Hotspot3DViewer {
       this.controls.enabled = !ev.value;
     });
 
-
     // SYNC live durante spostamento / rotazione / scala
     this.transformControls.addEventListener('objectChange', () => {
       if (!this.selectedHotspotId) return;
@@ -278,8 +283,8 @@ export class Hotspot3DViewer {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
         const sz = mesh.scale.z || 1;
-        const s  = (sx + sy + sz) / 3;   // fattore medio
-        mesh.scale.set(s, s, s);         // scala sempre uniforme
+        const s  = (sx + sy + sz) / 3;
+        mesh.scale.set(s, s, s);
       }
 
       // ---- SCALA "CILINDRO" PER CYLINDER ----
@@ -287,17 +292,24 @@ export class Hotspot3DViewer {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
         const sz = mesh.scale.z || 1;
-
-        // raggio: media di X e Z → base sempre circolare
         const radial = (sx + sz) / 2;
-
-        // altezza: asse Y così com'è
         mesh.scale.set(radial, sy, radial);
+      }
+
+      // se sto traslando, aggiorno i campi X/Y/Z live
+      if (this.gizmoMode === 'translate' && this.ui && this.selectedHotspotId === mesh.name) {
+        this._updatePosFieldsFromMesh(mesh);
+      }
+
+      // se sto ruotando, aggiorno i campi rot X/Y/Z live (solo box/cylinder)
+      if (this.gizmoMode === 'rotate' && this.ui && this.selectedHotspotId === mesh.name) {
+        if (mesh.userData.shape === 'box' || mesh.userData.shape === 'cylinder') {
+          this._updateRotFieldsFromMesh(mesh);
+        }
       }
 
       this._syncAll();
     });
-
 
     // commit al rilascio → onHotspotUpdated / resize / rot
     this.transformControls.addEventListener('mouseUp', () => {
@@ -318,7 +330,7 @@ export class Hotspot3DViewer {
           const newR = (ud.dims?.r || DEFAULT_SPHERE_R) * s;
           mesh.scale.set(1,1,1);
           this._resizeSelectedSphere(newR, true);
-          return; // _resizeSelectedSphere fa già onHotspotUpdated + SYNC
+          return;
         } else if (ud.shape === 'box') {
           const base = ud.dims || DEFAULT_BOX;
           const dims = {
@@ -351,6 +363,7 @@ export class Hotspot3DViewer {
             z: mesh.rotation.z * RAD2DEG,
           };
           mesh.userData.rot = ud.rot;
+          this._updateRotFieldsFromMesh(mesh);
         }
       }
 
@@ -366,17 +379,7 @@ export class Hotspot3DViewer {
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
 
-      // aggiorna baseline per slider Δ
-      this.translateOrigin.copy(p);
-      if (this.ui?.pos) {
-        this.ui.pos.x.slider.value = '0';
-        this.ui.pos.y.slider.value = '0';
-        this.ui.pos.z.slider.value = '0';
-        this.ui.pos.x.val.textContent = '0';
-        this.ui.pos.y.val.textContent = '0';
-        this.ui.pos.z.val.textContent = '0';
-      }
-
+      this._updatePosFieldsFromMesh(mesh);
       this._syncAll();
     });
   }
@@ -396,6 +399,7 @@ export class Hotspot3DViewer {
     this.renderer.render(this.scene, this.camera);
   };
 
+  // helper usato ancora da qualche blocco (ok se resta, anche se poco usato)
   _mkRow(labelText) {
     const row = document.createElement('div');
     row.style.display = 'grid';
@@ -419,7 +423,6 @@ export class Hotspot3DViewer {
     row.appendChild(value);
     return { row, value };
   }
-
 
   _mountUI() {
     const root = document.createElement('div');
@@ -448,7 +451,6 @@ export class Hotspot3DViewer {
       flexWrap: 'wrap'
     });
 
-    // Toggle Gizmo
     const btnGizmo = document.createElement('button');
     btnGizmo.textContent = 'Gizmo OFF';
     Object.assign(btnGizmo.style, {
@@ -480,7 +482,6 @@ export class Hotspot3DViewer {
       this._updateTransformControls();
     });
 
-    // Select modalità gizmo
     const modeLabel = document.createElement('span');
     modeLabel.textContent = 'Mode';
     modeLabel.style.fontSize = '12px';
@@ -511,69 +512,270 @@ export class Hotspot3DViewer {
     topBar.appendChild(modeLabel);
     topBar.appendChild(modeSelect);
     root.appendChild(topBar);
-    // ========== FINE TOP BAR ==========
 
-    // --- blocco POSITION (ΔX ΔY ΔZ) ---
+    // ========== POSITION BLOCK ==========
+
     const posBlock = document.createElement('div');
-    const posRowX = this._mkRow('ΔX');
-    const posX = document.createElement('input');
-    posX.type = 'range'; posX.min = '-1.0'; posX.max = '1.0'; posX.step = '0.005'; posX.value = '0';
 
-    const posRowY = this._mkRow('ΔY');
-    const posY = document.createElement('input');
-    posY.type = 'range'; posY.min = '-1.0'; posY.max = '1.0'; posY.step = '0.005'; posY.value = '0';
+    const posTitle = document.createElement('div');
+    posTitle.textContent = 'Position';
+    posTitle.style.fontSize = '12px';
+    posTitle.style.opacity = '.8';
+    posTitle.style.marginBottom = '4px';
+    posBlock.appendChild(posTitle);
 
-    const posRowZ = this._mkRow('ΔZ');
-    const posZ = document.createElement('input');
-    posZ.type = 'range'; posZ.min = '-1.0'; posZ.max = '1.0'; posZ.step = '0.005'; posZ.value = '0';
+    const makePosRow = (axisLabel) => {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        marginBottom: '4px'
+      });
 
-    posBlock.appendChild(posRowX.row); posBlock.appendChild(posX);
-    posBlock.appendChild(posRowY.row); posBlock.appendChild(posY);
-    posBlock.appendChild(posRowZ.row); posBlock.appendChild(posZ);
+      const lab = document.createElement('span');
+      lab.textContent = axisLabel;
+      lab.style.fontSize = '12px';
+      lab.style.width = '16px';
 
-    // --- Sphere ---
-    const sphereBlock = document.createElement('div');
-    const sphereRow = this._mkRow('raggio');
-    const sphereSlider = document.createElement('input');
-    sphereSlider.type = 'range'; sphereSlider.min = '0.01'; sphereSlider.max = '0.6'; sphereSlider.step = '0.005';
-    sphereSlider.value = String(DEFAULT_SPHERE_R);
-    sphereBlock.appendChild(sphereRow.row);
-    sphereBlock.appendChild(sphereSlider);
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = '0.001';
+      input.style.width = '80px';
+      input.style.fontSize = '12px';
+      input.style.padding = '2px 4px';
+      input.style.borderRadius = '4px';
+      input.style.border = '1px solid #00000030';
 
-    // --- Box dims ---
-    const boxBlock = document.createElement('div');
-    const boxRowX = this._mkRow('box x'); const boxX = document.createElement('input');
-    boxX.type = 'range'; boxX.min = '0.02'; boxX.max = '1.0'; boxX.step = '0.005'; boxX.value = String(DEFAULT_BOX.x);
-    const boxRowY = this._mkRow('box y'); const boxY = document.createElement('input');
-    boxY.type = 'range'; boxY.min = '0.02'; boxY.max = '1.0'; boxY.step = '0.005'; boxY.value = String(DEFAULT_BOX.y);
-    const boxRowZ = this._mkRow('box z'); const boxZ = document.createElement('input');
-    boxZ.type = 'range'; boxZ.min = '0.02'; boxZ.max = '1.0'; boxZ.step = '0.005'; boxZ.value = String(DEFAULT_BOX.z);
-    boxBlock.appendChild(boxRowX.row); boxBlock.appendChild(boxX);
-    boxBlock.appendChild(boxRowY.row); boxBlock.appendChild(boxY);
-    boxBlock.appendChild(boxRowZ.row); boxBlock.appendChild(boxZ);
+      const btnMinus = document.createElement('button');
+      btnMinus.textContent = '–';
+      Object.assign(btnMinus.style, {
+        width: '22px',
+        height: '22px',
+        padding: '0',
+        borderRadius: '4px',
+        border: '1px solid #00000030',
+        background: '#f3f3f3',
+        cursor: 'pointer',
+        fontSize: '12px',
+        lineHeight: '1'
+      });
 
-    // --- Cylinder dims ---
-    const cylBlock = document.createElement('div');
-    const cylRowR = this._mkRow('cyl r'); const cylR = document.createElement('input');
-    cylR.type = 'range'; cylR.min = '0.01'; cylR.max = '0.6'; cylR.step = '0.005'; cylR.value = String(DEFAULT_CYL.r);
-    const cylRowH = this._mkRow('cyl h'); const cylH = document.createElement('input');
-    cylH.type = 'range'; cylH.min = '0.02'; cylH.max = '1.0'; cylH.step = '0.005'; cylH.value = String(DEFAULT_CYL.h);
-    cylBlock.appendChild(cylRowR.row); cylBlock.appendChild(cylR);
-    cylBlock.appendChild(cylRowH.row); cylBlock.appendChild(cylH);
+      const btnPlus = document.createElement('button');
+      btnPlus.textContent = '+';
+      Object.assign(btnPlus.style, {
+        width: '22px',
+        height: '22px',
+        padding: '0',
+        borderRadius: '4px',
+        border: '1px solid #00000030',
+        background: '#f3f3f3',
+        cursor: 'pointer',
+        fontSize: '12px',
+        lineHeight: '1'
+      });
 
-    // --- Rotazioni (box & cylinder) ---
+      row.appendChild(lab);
+      row.appendChild(input);
+      row.appendChild(btnMinus);
+      row.appendChild(btnPlus);
+
+      return { row, input, btnMinus, btnPlus };
+    };
+
+    const posRowX = makePosRow('X');
+    const posRowY = makePosRow('Y');
+    const posRowZ = makePosRow('Z');
+
+    posBlock.appendChild(posRowX.row);
+    posBlock.appendChild(posRowY.row);
+    posBlock.appendChild(posRowZ.row);
+
+    // ========== ROTATION BLOCK (input + +/-) ==========
+
     const rotBlock = document.createElement('div');
-    const rotRowX = this._mkRow('rot X (°)'); const rotX = document.createElement('input');
-    rotX.type = 'range'; rotX.min = '-180'; rotX.max = '180'; rotX.step = '1'; rotX.value = '0';
-    const rotRowY = this._mkRow('rot Y (°)'); const rotY = document.createElement('input');
-    rotY.type = 'range'; rotY.min = '-180'; rotY.max = '180'; rotY.step = '1'; rotY.value = '0';
-    const rotRowZ = this._mkRow('rot Z (°)'); const rotZ = document.createElement('input');
-    rotZ.type = 'range'; rotZ.min = '-180'; rotZ.max = '180'; rotZ.step = '1'; rotZ.value = '0';
-    rotBlock.appendChild(rotRowX.row); rotBlock.appendChild(rotX);
-    rotBlock.appendChild(rotRowY.row); rotBlock.appendChild(rotY);
-    rotBlock.appendChild(rotRowZ.row); rotBlock.appendChild(rotZ);
 
-    // --- Colore ---
+    const rotTitle = document.createElement('div');
+    rotTitle.textContent = 'Rotation (°)';
+    rotTitle.style.fontSize = '12px';
+    rotTitle.style.opacity = '.8';
+    rotTitle.style.margin = '8px 0 4px 0';
+    rotBlock.appendChild(rotTitle);
+
+    const makeRotRow = (labelText) => {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        marginBottom: '4px'
+      });
+
+      const lab = document.createElement('span');
+      lab.textContent = labelText;
+      lab.style.fontSize = '12px';
+      lab.style.width = '40px';
+
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = '1';
+      input.min = '-180';
+      input.max = '180';
+      input.style.width = '70px';
+      input.style.fontSize = '12px';
+      input.style.padding = '2px 4px';
+      input.style.borderRadius = '4px';
+      input.style.border = '1px solid #00000030';
+
+      const btnMinus = document.createElement('button');
+      btnMinus.textContent = '–';
+      Object.assign(btnMinus.style, {
+        width: '22px',
+        height: '22px',
+        padding: '0',
+        borderRadius: '4px',
+        border: '1px solid #00000030',
+        background: '#f3f3f3',
+        cursor: 'pointer',
+        fontSize: '12px',
+        lineHeight: '1'
+      });
+
+      const btnPlus = document.createElement('button');
+      btnPlus.textContent = '+';
+      Object.assign(btnPlus.style, {
+        width: '22px',
+        height: '22px',
+        padding: '0',
+        borderRadius: '4px',
+        border: '1px solid #00000030',
+        background: '#f3f3f3',
+        cursor: 'pointer',
+        fontSize: '12px',
+        lineHeight: '1'
+      });
+
+      row.appendChild(lab);
+      row.appendChild(input);
+      row.appendChild(btnMinus);
+      row.appendChild(btnPlus);
+
+      return { row, input, btnMinus, btnPlus };
+    };
+
+    const rotRowX = makeRotRow('Rot X');
+    const rotRowY = makeRotRow('Rot Y');
+    const rotRowZ = makeRotRow('Rot Z');
+
+    rotBlock.appendChild(rotRowX.row);
+    rotBlock.appendChild(rotRowY.row);
+    rotBlock.appendChild(rotRowZ.row);
+
+    // ========== SCALE BLOCKS (solo input, niente slider) ==========
+
+    const makeScaleRow = (labelText) => {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        marginBottom: '4px'
+      });
+
+      const lab = document.createElement('span');
+      lab.textContent = labelText;
+      lab.style.fontSize = '12px';
+      lab.style.width = '60px';
+
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = '0.001';
+      input.style.width = '70px';
+      input.style.fontSize = '12px';
+      input.style.padding = '2px 4px';
+      input.style.borderRadius = '4px';
+      input.style.border = '1px solid #00000030';
+
+      const btnMinus = document.createElement('button');
+      btnMinus.textContent = '–';
+      Object.assign(btnMinus.style, {
+        width: '22px',
+        height: '22px',
+        padding: '0',
+        borderRadius: '4px',
+        border: '1px solid #00000030',
+        background: '#f3f3f3',
+        cursor: 'pointer',
+        fontSize: '12px',
+        lineHeight: '1'
+      });
+
+      const btnPlus = document.createElement('button');
+      btnPlus.textContent = '+';
+      Object.assign(btnPlus.style, {
+        width: '22px',
+        height: '22px',
+        padding: '0',
+        borderRadius: '4px',
+        border: '1px solid #00000030',
+        background: '#f3f3f3',
+        cursor: 'pointer',
+        fontSize: '12px',
+        lineHeight: '1'
+      });
+
+      row.appendChild(lab);
+      row.appendChild(input);
+      row.appendChild(btnMinus);
+      row.appendChild(btnPlus);
+
+      return { row, input, btnMinus, btnPlus };
+    };
+
+    // sphere: solo Raggio
+    const sphereBlock = document.createElement('div');
+    const sphTitle = document.createElement('div');
+    sphTitle.textContent = 'Scale (Sphere)';
+    sphTitle.style.fontSize = '12px';
+    sphTitle.style.opacity = '.8';
+    sphTitle.style.margin = '8px 0 4px 0';
+    sphereBlock.appendChild(sphTitle);
+
+    const sphRow = makeScaleRow('Raggio');
+    sphereBlock.appendChild(sphRow.row);
+
+    // box: Scale X/Y/Z
+    const boxBlock = document.createElement('div');
+    const boxTitle = document.createElement('div');
+    boxTitle.textContent = 'Scale (Box)';
+    boxTitle.style.fontSize = '12px';
+    boxTitle.style.opacity = '.8';
+    boxTitle.style.margin = '8px 0 4px 0';
+    boxBlock.appendChild(boxTitle);
+
+    const boxRowX = makeScaleRow('Scale X');
+    const boxRowY = makeScaleRow('Scale Y');
+    const boxRowZ = makeScaleRow('Scale Z');
+    boxBlock.appendChild(boxRowX.row);
+    boxBlock.appendChild(boxRowY.row);
+    boxBlock.appendChild(boxRowZ.row);
+
+    // cylinder: Raggio, Altezza
+    const cylBlock = document.createElement('div');
+    const cylTitle = document.createElement('div');
+    cylTitle.textContent = 'Scale (Cylinder)';
+    cylTitle.style.fontSize = '12px';
+    cylTitle.style.opacity = '.8';
+    cylTitle.style.margin = '8px 0 4px 0';
+    cylBlock.appendChild(cylTitle);
+
+    const cylRowR = makeScaleRow('Raggio');
+    const cylRowH = makeScaleRow('Altezza');
+    cylBlock.appendChild(cylRowR.row);
+    cylBlock.appendChild(cylRowH.row);
+
+    // ========== COLOR & ACTIONS ==========
+
     const colorBlock = document.createElement('div');
     const colorLabel = document.createElement('label');
     colorLabel.textContent = 'color'; colorLabel.style.display = 'block';
@@ -583,9 +785,9 @@ export class Hotspot3DViewer {
     colorInput.style.width = '100%'; colorInput.style.height = '32px';
     colorInput.style.padding = '0'; colorInput.style.border = '1px solid #00000030';
     colorInput.style.borderRadius = '6px';
-    colorBlock.appendChild(colorLabel); colorBlock.appendChild(colorInput);
+    colorBlock.appendChild(colorLabel); 
+    colorBlock.appendChild(colorInput);
 
-    // --- Actions (solo Delete + Close) ---
     const actions = document.createElement('div');
     Object.assign(actions.style, {
       display: 'flex',
@@ -623,12 +825,12 @@ export class Hotspot3DViewer {
     actions.appendChild(btnDelete);
     actions.appendChild(btnClose);
 
-    // Compose UI
+    // === ORDINE UI: Position → Rotation → Scale → Color → Actions ===
     root.appendChild(posBlock);
+    root.appendChild(rotBlock);
     root.appendChild(sphereBlock);
     root.appendChild(boxBlock);
     root.appendChild(cylBlock);
-    root.appendChild(rotBlock);
     root.appendChild(colorBlock);
     root.appendChild(actions);
 
@@ -637,27 +839,30 @@ export class Hotspot3DViewer {
       root, title,
       pos: {
         block: posBlock,
-        x: { slider: posX, val: posRowX.value },
-        y: { slider: posY, val: posRowY.value },
-        z: { slider: posZ, val: posRowZ.value },
+        x: { input: posRowX.input, dec: posRowX.btnMinus, inc: posRowX.btnPlus },
+        y: { input: posRowY.input, dec: posRowY.btnMinus, inc: posRowY.btnPlus },
+        z: { input: posRowZ.input, dec: posRowZ.btnMinus, inc: posRowZ.btnPlus },
       },
-      sphere: { block: sphereBlock, slider: sphereSlider, val: sphereRow.value },
+      sphere: {
+        block: sphereBlock,
+        r: { input: sphRow.input, dec: sphRow.btnMinus, inc: sphRow.btnPlus },
+      },
       box: {
         block: boxBlock,
-        x: { slider: boxX, val: boxRowX.value },
-        y: { slider: boxY, val: boxRowY.value },
-        z: { slider: boxZ, val: boxRowZ.value },
+        x: { input: boxRowX.input, dec: boxRowX.btnMinus, inc: boxRowX.btnPlus },
+        y: { input: boxRowY.input, dec: boxRowY.btnMinus, inc: boxRowY.btnPlus },
+        z: { input: boxRowZ.input, dec: boxRowZ.btnMinus, inc: boxRowZ.btnPlus },
       },
       cyl: {
         block: cylBlock,
-        r: { slider: cylR, val: cylRowR.value },
-        h: { slider: cylH, val: cylRowH.value },
+        r: { input: cylRowR.input, dec: cylRowR.btnMinus, inc: cylRowR.btnPlus },
+        h: { input: cylRowH.input, dec: cylRowH.btnMinus, inc: cylRowH.btnPlus },
       },
       rot: {
         block: rotBlock,
-        x: { slider: rotX, val: rotRowX.value },
-        y: { slider: rotY, val: rotRowY.value },
-        z: { slider: rotZ, val: rotRowZ.value },
+        x: { input: rotRowX.input, dec: rotRowX.btnMinus, inc: rotRowX.btnPlus },
+        y: { input: rotRowY.input, dec: rotRowY.btnMinus, inc: rotRowY.btnPlus },
+        z: { input: rotRowZ.input, dec: rotRowZ.btnMinus, inc: rotRowZ.btnPlus },
       },
       color: { block: colorBlock, input: colorInput },
       btnDelete, btnClose,
@@ -672,107 +877,293 @@ export class Hotspot3DViewer {
       if (this.selectedHotspotId) this._removeHotspot(this.selectedHotspotId);
     });
 
+    // --- POSIZIONE: input X/Y/Z + pulsanti +/- ---
+    const applyAxisValue = (axis) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh) return;
+      const uiAxis = this.ui.pos[axis];
 
-    // --- TRASLAZIONE ΔX/ΔY/ΔZ, resize, rot, colore ---
-    const updatePosLabels = () => {
-      this.ui.pos.x.val.textContent = this.ui.pos.x.slider.value;
-      this.ui.pos.y.val.textContent = this.ui.pos.y.slider.value;
-      this.ui.pos.z.val.textContent = this.ui.pos.z.slider.value;
-    };
-    const onPosInput = () => {
-      updatePosLabels();
-      this._applyDeltaPosition(false); // SYNC live
-    };
-    const onPosCommit = () => {
-      this._applyDeltaPosition(true);  // commit + onHotspotUpdated
-    };
-    this.ui.pos.x.slider.addEventListener('input', onPosInput);
-    this.ui.pos.y.slider.addEventListener('input', onPosInput);
-    this.ui.pos.z.slider.addEventListener('input', onPosInput);
-    this.ui.pos.x.slider.addEventListener('change', onPosCommit);
-    this.ui.pos.y.slider.addEventListener('change', onPosCommit);
-    this.ui.pos.z.slider.addEventListener('change', onPosCommit);
+      const v = parseFloat(uiAxis.input.value);
+      if (!Number.isFinite(v)) return;
 
-    const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
-    sphereSlider.addEventListener('input', () => {
-      let r = Number(sphereSlider.value);
-      r = clamp(r, 0.01, this.modelLimits.maxSphereR);
-      sphereSlider.value = String(r);
-      this.ui.sphere.val.textContent = sphereSlider.value;
-      this._resizeSelectedSphere(r, false);
+      mesh.position[axis] = v;
+
+      if (this.transformControls && this.currentMode === 'edit' && this.gizmoEnabled) {
+        this.transformControls.attach(mesh);
+      }
+
+      const ud = mesh.userData || {};
+      const p = mesh.position;
+      const payload = {
+        Id: id,
+        X: p.x, Y: p.y, Z: p.z,
+        shape: ud.shape,
+        dims: { ...(ud.dims || {}) },
+        color: ud.color
+      };
+      if (ud.rot) payload.rot = { ...ud.rot };
+      this._emit({ type: 'onHotspotUpdated', payload });
+      this._syncAll();
+    };
+
+    const applyAxisStep = (axis, sign) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh) return;
+
+      const current = mesh.position[axis] || 0;
+      const next = current + sign * POSITION_STEP;
+      mesh.position[axis] = next;
+
+      this._updatePosFieldsFromMesh(mesh);
+
+      if (this.transformControls && this.currentMode === 'edit' && this.gizmoEnabled) {
+        this.transformControls.attach(mesh);
+      }
+
+      const ud = mesh.userData || {};
+      const p = mesh.position;
+      const payload = {
+        Id: id,
+        X: p.x, Y: p.y, Z: p.z,
+        shape: ud.shape,
+        dims: { ...(ud.dims || {}) },
+        color: ud.color
+      };
+      if (ud.rot) payload.rot = { ...ud.rot };
+      this._emit({ type: 'onHotspotUpdated', payload });
+      this._syncAll();
+    };
+
+    ['x','y','z'].forEach(axis => {
+      const uiAxis = this.ui.pos[axis];
+
+      uiAxis.input.addEventListener('change', () => applyAxisValue(axis));
+      uiAxis.input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          applyAxisValue(axis);
+        }
+      });
+
+      uiAxis.dec.addEventListener('click', () => applyAxisStep(axis, -1));
+      uiAxis.inc.addEventListener('click', () => applyAxisStep(axis, +1));
     });
-    sphereSlider.addEventListener('change', () => {
-      let r = Number(sphereSlider.value);
-      r = clamp(r, 0.01, this.modelLimits.maxSphereR);
-      sphereSlider.value = String(r);
+
+    // --- SCALE: sphere (Raggio) ---
+    const applySphereRadiusValue = () => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'sphere') return;
+
+      let r = parseFloat(this.ui.sphere.r.input.value);
+      if (!Number.isFinite(r)) return;
+
+      r = Math.max(0.01, Math.min(r, this.modelLimits.maxSphereR));
+      this.ui.sphere.r.input.value = r.toFixed(3);
+
       this._resizeSelectedSphere(r, true);
-    });
-
-    const onBoxInput = () => {
-      let dims = { x: +this.ui.box.x.slider.value, y: +this.ui.box.y.slider.value, z: +this.ui.box.z.slider.value };
-      dims = this._clampDimsToLimits('box', dims);
-      this.ui.box.x.slider.value = String(dims.x);
-      this.ui.box.y.slider.value = String(dims.y);
-      this.ui.box.z.slider.value = String(dims.z);
-      this.ui.box.x.val.textContent = this.ui.box.x.slider.value;
-      this.ui.box.y.val.textContent = this.ui.box.y.slider.value;
-      this.ui.box.z.val.textContent = this.ui.box.z.slider.value;
-      this._resizeSelectedBox(dims, false);
     };
-    const onBoxCommit = () => {
-      let dims = { x: +this.ui.box.x.slider.value, y: +this.ui.box.y.slider.value, z: +this.ui.box.z.slider.value };
+
+    const applySphereRadiusStep = (sign) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'sphere') return;
+
+      const dims = mesh.userData.dims || { r: DEFAULT_SPHERE_R };
+      let r = dims.r || DEFAULT_SPHERE_R;
+      r += sign * SCALE_STEP;
+      r = Math.max(0.01, Math.min(r, this.modelLimits.maxSphereR));
+      this._resizeSelectedSphere(r, true);
+
+      if (this.ui.sphere?.r?.input) {
+        this.ui.sphere.r.input.value = r.toFixed(3);
+      }
+    };
+
+    this.ui.sphere.r.input.addEventListener('change', applySphereRadiusValue);
+    this.ui.sphere.r.input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') applySphereRadiusValue();
+    });
+    this.ui.sphere.r.dec.addEventListener('click', () => applySphereRadiusStep(-1));
+    this.ui.sphere.r.inc.addEventListener('click', () => applySphereRadiusStep(+1));
+
+    // --- SCALE: box (Scale X/Y/Z) ---
+    const applyBoxDims = () => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'box') return;
+
+      let dims = {
+        x: parseFloat(this.ui.box.x.input.value),
+        y: parseFloat(this.ui.box.y.input.value),
+        z: parseFloat(this.ui.box.z.input.value),
+      };
+      if (!Number.isFinite(dims.x) || !Number.isFinite(dims.y) || !Number.isFinite(dims.z)) return;
+
       dims = this._clampDimsToLimits('box', dims);
-      this.ui.box.x.slider.value = String(dims.x);
-      this.ui.box.y.slider.value = String(dims.y);
-      this.ui.box.z.slider.value = String(dims.z);
+      this.ui.box.x.input.value = dims.x.toFixed(3);
+      this.ui.box.y.input.value = dims.y.toFixed(3);
+      this.ui.box.z.input.value = dims.z.toFixed(3);
+
       this._resizeSelectedBox(dims, true);
     };
-    this.ui.box.x.slider.addEventListener('input', onBoxInput);
-    this.ui.box.y.slider.addEventListener('input', onBoxInput);
-    this.ui.box.z.slider.addEventListener('input', onBoxInput);
-    this.ui.box.x.slider.addEventListener('change', onBoxCommit);
-    this.ui.box.y.slider.addEventListener('change', onBoxCommit);
-    this.ui.box.z.slider.addEventListener('change', onBoxCommit);
 
-    const onCylInput = () => {
-      let dims = { r: +this.ui.cyl.r.slider.value, h: +this.ui.cyl.h.slider.value };
-      dims = this._clampDimsToLimits('cylinder', dims);
-      this.ui.cyl.r.slider.value = String(dims.r);
-      this.ui.cyl.h.slider.value = String(dims.h);
-      this.ui.cyl.r.val.textContent = this.ui.cyl.r.slider.value;
-      this.ui.cyl.h.val.textContent = this.ui.cyl.h.slider.value;
-      this._resizeSelectedCylinder(dims, false);
+    const applyBoxStep = (axis, sign) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'box') return;
+
+      let dims = mesh.userData.dims || { ...DEFAULT_BOX };
+      let v = dims[axis] || DEFAULT_BOX[axis];
+      v += sign * SCALE_STEP;
+      dims[axis] = v;
+
+      dims = this._clampDimsToLimits('box', dims);
+      this._resizeSelectedBox(dims, true);
+
+      this.ui.box.x.input.value = dims.x.toFixed(3);
+      this.ui.box.y.input.value = dims.y.toFixed(3);
+      this.ui.box.z.input.value = dims.z.toFixed(3);
     };
-    const onCylCommit = () => {
-      let dims = { r: +this.ui.cyl.r.slider.value, h: +this.ui.cyl.h.slider.value };
+
+    ['x','y','z'].forEach(axis => {
+      const uiAxis = this.ui.box[axis];
+      uiAxis.input.addEventListener('change', applyBoxDims);
+      uiAxis.input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') applyBoxDims();
+      });
+      uiAxis.dec.addEventListener('click', () => applyBoxStep(axis, -1));
+      uiAxis.inc.addEventListener('click', () => applyBoxStep(axis, +1));
+    });
+
+    // --- SCALE: cylinder (Raggio, Altezza) ---
+    const applyCylDims = () => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'cylinder') return;
+
+      let dims = {
+        r: parseFloat(this.ui.cyl.r.input.value),
+        h: parseFloat(this.ui.cyl.h.input.value),
+      };
+      if (!Number.isFinite(dims.r) || !Number.isFinite(dims.h)) return;
+
       dims = this._clampDimsToLimits('cylinder', dims);
-      this.ui.cyl.r.slider.value = String(dims.r);
-      this.ui.cyl.h.slider.value = String(dims.h);
+      this.ui.cyl.r.input.value = dims.r.toFixed(3);
+      this.ui.cyl.h.input.value = dims.h.toFixed(3);
+
       this._resizeSelectedCylinder(dims, true);
     };
-    this.ui.cyl.r.slider.addEventListener('input', onCylInput);
-    this.ui.cyl.h.slider.addEventListener('input', onCylInput);
-    this.ui.cyl.r.slider.addEventListener('change', onCylCommit);
-    this.ui.cyl.h.slider.addEventListener('change', onCylCommit);
 
-    const onRotInput = () => {
-      const rot = { x: +this.ui.rot.x.slider.value, y: +this.ui.rot.y.slider.value, z: +this.ui.rot.z.slider.value };
-      this.ui.rot.x.val.textContent = String(rot.x);
-      this.ui.rot.y.val.textContent = String(rot.y);
-      this.ui.rot.z.val.textContent = String(rot.z);
-      this._rotateSelected(rot, false);
-    };
-    const onRotCommit = () => {
-      const rot = { x: +this.ui.rot.x.slider.value, y: +this.ui.rot.y.slider.value, z: +this.ui.rot.z.slider.value };
-      this._rotateSelected(rot, true);
-    };
-    this.ui.rot.x.slider.addEventListener('input', onRotInput);
-    this.ui.rot.y.slider.addEventListener('input', onRotInput);
-    this.ui.rot.z.slider.addEventListener('input', onRotInput);
-    this.ui.rot.x.slider.addEventListener('change', onRotCommit);
-    this.ui.rot.y.slider.addEventListener('change', onRotCommit);
-    this.ui.rot.z.slider.addEventListener('change', onRotCommit);
+    const applyCylStep = (key, sign) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'cylinder') return;
 
+      let dims = mesh.userData.dims || { ...DEFAULT_CYL };
+      let v = dims[key] || DEFAULT_CYL[key];
+      v += sign * SCALE_STEP;
+      dims[key] = v;
+
+      dims = this._clampDimsToLimits('cylinder', dims);
+      this._resizeSelectedCylinder(dims, true);
+
+      this.ui.cyl.r.input.value = dims.r.toFixed(3);
+      this.ui.cyl.h.input.value = dims.h.toFixed(3);
+    };
+
+    this.ui.cyl.r.input.addEventListener('change', applyCylDims);
+    this.ui.cyl.h.input.addEventListener('change', applyCylDims);
+    this.ui.cyl.r.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') applyCylDims(); });
+    this.ui.cyl.h.input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') applyCylDims(); });
+    this.ui.cyl.r.dec.addEventListener('click', () => applyCylStep('r', -1));
+    this.ui.cyl.r.inc.addEventListener('click', () => applyCylStep('r', +1));
+    this.ui.cyl.h.dec.addEventListener('click', () => applyCylStep('h', -1));
+    this.ui.cyl.h.inc.addEventListener('click', () => applyCylStep('h', +1));
+
+    // --- ROTAZIONE: input + +/- ---
+    const applyRotAxisValue = (axis) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh) return;
+      if (!(mesh.userData.shape === 'box' || mesh.userData.shape === 'cylinder')) return;
+
+      const uiAxis = this.ui.rot[axis];
+      const v = parseFloat(uiAxis.input.value);
+      if (!Number.isFinite(v)) return;
+
+      const rot = mesh.userData.rot || { x: 0, y: 0, z: 0 };
+      rot[axis] = v;
+      mesh.userData.rot = rot;
+
+      mesh.rotation.set(
+        (rot.x || 0) * DEG2RAD,
+        (rot.y || 0) * DEG2RAD,
+        (rot.z || 0) * DEG2RAD
+      );
+
+      if (this.transformControls && this.currentMode === 'edit' && this.gizmoEnabled) {
+        this.transformControls.attach(mesh);
+      }
+
+      const c = mesh.position;
+      const payload = {
+        Id: id,
+        X: c.x, Y: c.y, Z: c.z,
+        shape: mesh.userData.shape,
+        dims: { ...mesh.userData.dims },
+        rot: { ...mesh.userData.rot },
+        color: mesh.userData.color
+      };
+      this._emit({ type: 'onHotspotUpdated', payload });
+      this._syncAll();
+    };
+
+    const applyRotAxisStep = (axis, sign) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh) return;
+      if (!(mesh.userData.shape === 'box' || mesh.userData.shape === 'cylinder')) return;
+
+      const rot = mesh.userData.rot || { x: 0, y: 0, z: 0 };
+      const current = rot[axis] || 0;
+      let next = current + sign * ROT_STEP;
+      if (next > 180) next -= 360;
+      if (next < -180) next += 360;
+      rot[axis] = next;
+      mesh.userData.rot = rot;
+
+      mesh.rotation.set(
+        (rot.x || 0) * DEG2RAD,
+        (rot.y || 0) * DEG2RAD,
+        (rot.z || 0) * DEG2RAD
+      );
+
+      this._updateRotFieldsFromMesh(mesh);
+
+      if (this.transformControls && this.currentMode === 'edit' && this.gizmoEnabled) {
+        this.transformControls.attach(mesh);
+      }
+
+      const c = mesh.position;
+      const payload = {
+        Id: id,
+        X: c.x, Y: c.y, Z: c.z,
+        shape: mesh.userData.shape,
+        dims: { ...mesh.userData.dims },
+        rot: { ...mesh.userData.rot },
+        color: mesh.userData.color
+      };
+      this._emit({ type: 'onHotspotUpdated', payload });
+      this._syncAll();
+    };
+
+    ['x','y','z'].forEach(axis => {
+      const uiAxis = this.ui.rot[axis];
+
+      uiAxis.input.addEventListener('change', () => applyRotAxisValue(axis));
+      uiAxis.input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          applyRotAxisValue(axis);
+        }
+      });
+
+      uiAxis.dec.addEventListener('click', () => applyRotAxisStep(axis, -1));
+      uiAxis.inc.addEventListener('click', () => applyRotAxisStep(axis, +1));
+    });
+
+    // --- colore ---
     const onColorChange = () => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh) return;
@@ -798,20 +1189,37 @@ export class Hotspot3DViewer {
     this._applyLimitsToUI();
   }
 
-
   _bindEvents() {
     const dom = this.renderer.domElement;
-    dom.addEventListener('mousedown', (e) => { this.dragStart = { x: e.clientX, y: e.clientY }; this.isDragging = false; });
+
+    dom.addEventListener('mousedown', (e) => {
+      this.dragStart = { x: e.clientX, y: e.clientY };
+      this.isDragging = false;
+    });
+
     dom.addEventListener('mousemove', (e) => {
-      const dx = e.clientX - this.dragStart.x, dy = e.clientY - this.dragStart.y;
+      const dx = e.clientX - this.dragStart.x;
+      const dy = e.clientY - this.dragStart.y;
       if (Math.sqrt(dx*dx + dy*dy) > 5) this.isDragging = true;
     });
-    dom.addEventListener('mouseup', (e) => { if (!this.isDragging) this._handlePointerTap(e); });
+
+    dom.addEventListener('mouseup', (e) => {
+      if (!this.isDragging) this._handlePointerTap(e);
+    });
 
     window.addEventListener('keydown', (e) => {
       if (this.currentMode !== 'edit') return;
       if (!this.selectedHotspotId) return;
-      if (e.key === 'Delete' || e.key === 'Backspace') this._removeHotspot(this.selectedHotspotId);
+
+      const target = e.target;
+      const tag = target && target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) {
+        return;
+      }
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        this._removeHotspot(this.selectedHotspotId);
+      }
     });
   }
 
@@ -883,17 +1291,14 @@ export class Hotspot3DViewer {
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouse, this.camera);
 
-    // 1) prova selezione hotspot
     const hotspotMeshes = Object.values(this.hotspots);
     if (hotspotMeshes.length > 0) {
       const hotspotHit = this.raycaster.intersectObjects(hotspotMeshes, false);
       if (hotspotHit.length > 0) { this._selectHotspot(hotspotHit[0].object.name); return; }
     }
 
-    // 2) click a vuoto
     if (this.currentMode !== 'edit') { this._selectHotspot(null); return; }
 
-    // 3) crea nuovo (click su modello)
     if (!this.model) return;
     const intersects = this.raycaster.intersectObject(this.model, true);
     if (intersects.length === 0) return;
@@ -942,7 +1347,6 @@ export class Hotspot3DViewer {
   }
 
   _selectHotspot(id, { notify = true, color = HOTSPOT_SELECTED_COLOR } = {}) {
-    // ripristina colore base sul precedente selezionato
     if (this.selectedHotspotId && this.hotspots[this.selectedHotspotId]) {
       const prev = this.hotspots[this.selectedHotspotId];
       const baseHex = prev.userData?.color || DEFAULT_HOTSPOT_HEX;
@@ -962,17 +1366,6 @@ export class Hotspot3DViewer {
     mesh.material.color.set(color);
     this.selectedHotspotId = id;
 
-    // aggiorna baseline di traslazione e reset slider Δ
-    this.translateOrigin.copy(mesh.position);
-    if (this.ui?.pos) {
-      this.ui.pos.x.slider.value = '0';
-      this.ui.pos.y.slider.value = '0';
-      this.ui.pos.z.slider.value = '0';
-      this.ui.pos.x.val.textContent = '0';
-      this.ui.pos.y.val.textContent = '0';
-      this.ui.pos.z.val.textContent = '0';
-    }
-
     this._updateTransformControls();
 
     if (notify) this._emit({ type: 'onHotspotSelected', payload: { Id: id } });
@@ -986,7 +1379,7 @@ export class Hotspot3DViewer {
 
     const canShow =
       this.currentMode === 'edit' &&
-      this.gizmoEnabled &&        // toggle UI
+      this.gizmoEnabled &&
       this.selectedHotspotId &&
       this.hotspots[this.selectedHotspotId];
 
@@ -1001,7 +1394,7 @@ export class Hotspot3DViewer {
     }
   }
 
-  _createHotspot(id, pos, shape = 'sphere', dims = { r: DEFAULT_SPHERE_R }, rotDeg /* opzionale */, colorHex = DEFAULT_HOTSPOT_HEX) {
+  _createHotspot(id, pos, shape = 'sphere', dims = { r: DEFAULT_SPHERE_R }, rotDeg, colorHex = DEFAULT_HOTSPOT_HEX) {
     let geom;
     if (shape === 'box') {
       const dx = dims?.x ?? DEFAULT_BOX.x;
@@ -1047,77 +1440,55 @@ export class Hotspot3DViewer {
     this.ui.title.textContent = `Hotspot ${mesh.name} (${shape})`;
     this.ui.btnDelete.disabled = false;
 
-    // allinea limiti
     this._applyLimitsToUI();
 
-    // reset display dei blocchi
-    this.ui.pos.block.style.display    = 'block'; // la traslazione c’è sempre in edit
+    this.ui.pos.block.style.display    = 'block';
     this.ui.sphere.block.style.display = 'none';
     this.ui.box.block.style.display    = 'none';
     this.ui.cyl.block.style.display    = 'none';
     this.ui.rot.block.style.display    = 'none';
 
-    // reset pos sliders (baseline aggiornata in _selectHotspot)
-    this.ui.pos.x.slider.value = '0'; this.ui.pos.y.slider.value = '0'; this.ui.pos.z.slider.value = '0';
-    this.ui.pos.x.val.textContent = '0'; this.ui.pos.y.val.textContent = '0'; this.ui.pos.z.val.textContent = '0';
+    this._updatePosFieldsFromMesh(mesh);
 
     if (shape === 'sphere') {
-      const c = this._clampDimsToLimits('sphere', dims); if (c.r !== dims.r) { dims = c; mesh.userData.dims = c; }
+      const c = this._clampDimsToLimits('sphere', dims); 
+      if (c.r !== dims.r) { dims = c; mesh.userData.dims = c; }
+
       this.ui.sphere.block.style.display = 'block';
-      this.ui.sphere.slider.max = String(this.modelLimits.maxSphereR.toFixed(3));
-      this.ui.sphere.slider.value = String(dims.r ?? DEFAULT_SPHERE_R);
-      this.ui.sphere.val.textContent = this.ui.sphere.slider.value;
+      if (this.ui.sphere.r.input) {
+        this.ui.sphere.r.input.value = (dims.r ?? DEFAULT_SPHERE_R).toFixed(3);
+      }
+
+      // nessuna rotazione per sphere
 
     } else if (shape === 'box') {
-      const c = this._clampDimsToLimits('box', dims); if (c.x !== dims.x || c.y !== dims.y || c.z !== dims.z) { mesh.userData.dims = c; dims = c; }
+      const c = this._clampDimsToLimits('box', dims);
+      if (c.x !== dims.x || c.y !== dims.y || c.z !== dims.z) { mesh.userData.dims = c; dims = c; }
       this.ui.box.block.style.display = 'block';
       this.ui.rot.block.style.display = 'block';
 
-      this.ui.box.x.slider.max = String(this.modelLimits.maxBox.x.toFixed(3));
-      this.ui.box.y.slider.max = String(this.modelLimits.maxBox.y.toFixed(3));
-      this.ui.box.z.slider.max = String(this.modelLimits.maxBox.z.toFixed(3));
-      this.ui.box.x.slider.value = String(dims.x ?? DEFAULT_BOX.x);
-      this.ui.box.y.slider.value = String(dims.y ?? DEFAULT_BOX.y);
-      this.ui.box.z.slider.value = String(dims.z ?? DEFAULT_BOX.z);
-      this.ui.box.x.val.textContent = this.ui.box.x.slider.value;
-      this.ui.box.y.val.textContent = this.ui.box.y.slider.value;
-      this.ui.box.z.val.textContent = this.ui.box.z.slider.value;
+      this.ui.box.x.input.value = (dims.x ?? DEFAULT_BOX.x).toFixed(3);
+      this.ui.box.y.input.value = (dims.y ?? DEFAULT_BOX.y).toFixed(3);
+      this.ui.box.z.input.value = (dims.z ?? DEFAULT_BOX.z).toFixed(3);
 
-      const r = mesh.userData.rot || DEFAULT_BOX_ROT;
-      this.ui.rot.x.slider.value = String(r.x ?? 0);
-      this.ui.rot.y.slider.value = String(r.y ?? 0);
-      this.ui.rot.z.slider.value = String(r.z ?? 0);
-      this.ui.rot.x.val.textContent = this.ui.rot.x.slider.value;
-      this.ui.rot.y.val.textContent = this.ui.rot.y.slider.value;
-      this.ui.rot.z.val.textContent = this.ui.rot.z.slider.value;
+      this._updateRotFieldsFromMesh(mesh);
 
     } else { // cylinder
-      const c = this._clampDimsToLimits('cylinder', dims); if (c.r !== dims.r || c.h !== dims.h) { mesh.userData.dims = c; dims = c; }
+      const c = this._clampDimsToLimits('cylinder', dims); 
+      if (c.r !== dims.r || c.h !== dims.h) { mesh.userData.dims = c; dims = c; }
       this.ui.cyl.block.style.display = 'block';
       this.ui.rot.block.style.display = 'block';
 
-      this.ui.cyl.r.slider.max = String(this.modelLimits.maxCylinder.r.toFixed(3));
-      this.ui.cyl.h.slider.max = String(this.modelLimits.maxCylinder.h.toFixed(3));
-      this.ui.cyl.r.slider.value = String(dims.r ?? DEFAULT_CYL.r);
-      this.ui.cyl.h.slider.value = String(dims.h ?? DEFAULT_CYL.h);
-      this.ui.cyl.r.val.textContent = this.ui.cyl.r.slider.value;
-      this.ui.cyl.h.val.textContent = this.ui.cyl.h.slider.value;
+      this.ui.cyl.r.input.value = (dims.r ?? DEFAULT_CYL.r).toFixed(3);
+      this.ui.cyl.h.input.value = (dims.h ?? DEFAULT_CYL.h).toFixed(3);
 
-      const r = mesh.userData.rot || DEFAULT_CYL_ROT;
-      this.ui.rot.x.slider.value = String(r.x ?? 0);
-      this.ui.rot.y.slider.value = String(r.y ?? 0);
-      this.ui.rot.z.slider.value = String(r.z ?? 0);
-      this.ui.rot.x.val.textContent = this.ui.rot.x.slider.value;
-      this.ui.rot.y.val.textContent = this.ui.rot.y.slider.value;
-      this.ui.rot.z.val.textContent = this.ui.rot.z.slider.value;
+      this._updateRotFieldsFromMesh(mesh);
     }
 
-    // colore
     const baseHex = mesh.userData?.color || DEFAULT_HOTSPOT_HEX;
     this.ui.color.block.style.display = 'block';
     this.ui.color.input.value = baseHex;
 
-    // modalità selezionata sul select
     if (this.ui.modeSelect) this.ui.modeSelect.value = this.gizmoMode;
 
     this.ui.root.style.display = 'block';
@@ -1131,50 +1502,31 @@ export class Hotspot3DViewer {
     this.ui.color.block.style.display = 'none';
   }
 
-  /* === Traslazione con slider ΔX/ΔY/ΔZ === */
-  _applyDeltaPosition(commit) {
-    const id = this.selectedHotspotId; if (!id) return;
-    const mesh = this.hotspots[id]; if (!mesh) return;
+  _updatePosFieldsFromMesh(mesh) {
+    if (!this.ui || !this.ui.pos) return;
+    const p = mesh.position;
+    this.ui.pos.x.input.value = p.x.toFixed(3);
+    this.ui.pos.y.input.value = p.y.toFixed(3);
+    this.ui.pos.z.input.value = p.z.toFixed(3);
+  }
 
-    const dx = +this.ui.pos.x.slider.value;
-    const dy = +this.ui.pos.y.slider.value;
-    const dz = +this.ui.pos.z.slider.value;
+  _updateRotFieldsFromMesh(mesh) {
+    if (!this.ui || !this.ui.rot) return;
+    if (!(mesh.userData.shape === 'box' || mesh.userData.shape === 'cylinder')) return;
 
-    // nuovo centro = origineSelezione + delta
-    const newPos = new THREE.Vector3(
-      this.translateOrigin.x + dx,
-      this.translateOrigin.y + dy,
-      this.translateOrigin.z + dz
-    );
-    mesh.position.copy(newPos);
+    const xDeg = mesh.rotation.x * RAD2DEG;
+    const yDeg = mesh.rotation.y * RAD2DEG;
+    const zDeg = mesh.rotation.z * RAD2DEG;
 
-    // il gizmo segue l'oggetto se è attivo
-    if (this.transformControls && this.currentMode === 'edit' && this.gizmoEnabled) {
-      this.transformControls.attach(mesh);
-    }
+    const rot = mesh.userData.rot || {};
+    rot.x = xDeg;
+    rot.y = yDeg;
+    rot.z = zDeg;
+    mesh.userData.rot = rot;
 
-    if (commit) {
-      const p = mesh.position;
-      const payload = {
-        Id: id, X: p.x, Y: p.y, Z: p.z,
-        shape: mesh.userData.shape,
-        dims: { ...mesh.userData.dims },
-        color: mesh.userData.color
-      };
-      if (mesh.userData.rot) payload.rot = { ...mesh.userData.rot };
-      this._emit({ type: 'onHotspotUpdated', payload });
-
-      // aggiorna baseline e reset Δ
-      this.translateOrigin.copy(p);
-      this.ui.pos.x.slider.value = '0';
-      this.ui.pos.y.slider.value = '0';
-      this.ui.pos.z.slider.value = '0';
-      this.ui.pos.x.val.textContent = '0';
-      this.ui.pos.y.val.textContent = '0';
-      this.ui.pos.z.val.textContent = '0';
-    }
-
-    this._syncAll();
+    this.ui.rot.x.input.value = xDeg.toFixed(0);
+    this.ui.rot.y.input.value = yDeg.toFixed(0);
+    this.ui.rot.z.input.value = zDeg.toFixed(0);
   }
 
   _resizeSelectedSphere(r, commit) {
@@ -1194,6 +1546,9 @@ export class Hotspot3DViewer {
         type: 'onHotspotUpdated',
         payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'sphere', dims: { r }, color: mesh.userData.color }
       });
+      if (this.ui && this.selectedHotspotId === id) {
+        this._showUIFor(mesh);
+      }
     }
     this._syncAll();
   }
@@ -1218,6 +1573,9 @@ export class Hotspot3DViewer {
         type: 'onHotspotUpdated',
         payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'box', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
       });
+      if (this.ui && this.selectedHotspotId === id) {
+        this._showUIFor(mesh);
+      }
     }
     this._syncAll();
   }
@@ -1242,24 +1600,9 @@ export class Hotspot3DViewer {
         type: 'onHotspotUpdated',
         payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'cylinder', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
       });
-    }
-    this._syncAll();
-  }
-
-  _rotateSelected(rotDeg, commit) {
-    const id = this.selectedHotspotId; if (!id) return;
-    const mesh = this.hotspots[id]; if (!mesh) return;
-    if (!(mesh.userData.shape === 'box' || mesh.userData.shape === 'cylinder')) return;
-
-    mesh.rotation.set((rotDeg.x || 0) * DEG2RAD, (rotDeg.y || 0) * DEG2RAD, (rotDeg.z || 0) * DEG2RAD);
-    mesh.userData.rot = { x: rotDeg.x || 0, y: rotDeg.y || 0, z: rotDeg.z || 0 };
-
-    if (commit) {
-      const c = mesh.position;
-      this._emit({
-        type: 'onHotspotUpdated',
-        payload: { Id: id, X: c.x, Y: c.y, Z: c.z, shape: mesh.userData.shape, dims: { ...mesh.userData.dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
-      });
+      if (this.ui && this.selectedHotspotId === id) {
+        this._showUIFor(mesh);
+      }
     }
     this._syncAll();
   }
@@ -1303,26 +1646,30 @@ export class Hotspot3DViewer {
     this.modelBounds.center.copy(center);
     this.modelBounds.size.copy(size);
 
-    // adegua range per slider Δ a ~mezzo bbox
-    const half = Math.max(size.x, size.y, size.z) * 0.5 || 1;
-    if (this.ui?.pos) {
-      const setRange = (sl) => { sl.min = (-half).toFixed(3); sl.max = (half).toFixed(3); };
-      setRange(this.ui.pos.x.slider);
-      setRange(this.ui.pos.y.slider);
-      setRange(this.ui.pos.z.slider);
-    }
-
     this._applyLimitsToUI();
   }
 
   _applyLimitsToUI() {
     if (!this.ui) return;
-    if (this.ui.sphere?.slider) this.ui.sphere.slider.max = String(this.modelLimits.maxSphereR.toFixed(3));
-    if (this.ui.box?.x?.slider) this.ui.box.x.slider.max = String(this.modelLimits.maxBox.x.toFixed(3));
-    if (this.ui.box?.y?.slider) this.ui.box.y.slider.max = String(this.modelLimits.maxBox.y.toFixed(3));
-    if (this.ui.box?.z?.slider) this.ui.box.z.slider.max = String(this.modelLimits.maxBox.z.toFixed(3));
-    if (this.ui.cyl?.r?.slider) this.ui.cyl.r.slider.max = String(this.modelLimits.maxCylinder.r.toFixed(3));
-    if (this.ui.cyl?.h?.slider) this.ui.cyl.h.slider.max = String(this.modelLimits.maxCylinder.h.toFixed(3));
+
+    if (this.ui.sphere?.r?.input) {
+      this.ui.sphere.r.input.min = '0.01';
+      this.ui.sphere.r.input.max = String(this.modelLimits.maxSphereR.toFixed(3));
+    }
+    if (this.ui.box?.x?.input) {
+      this.ui.box.x.input.min = '0.02';
+      this.ui.box.y.input.min = '0.02';
+      this.ui.box.z.input.min = '0.02';
+      this.ui.box.x.input.max = String(this.modelLimits.maxBox.x.toFixed(3));
+      this.ui.box.y.input.max = String(this.modelLimits.maxBox.y.toFixed(3));
+      this.ui.box.z.input.max = String(this.modelLimits.maxBox.z.toFixed(3));
+    }
+    if (this.ui.cyl?.r?.input) {
+      this.ui.cyl.r.input.min = '0.01';
+      this.ui.cyl.h.input.min = '0.02';
+      this.ui.cyl.r.input.max = String(this.modelLimits.maxCylinder.r.toFixed(3));
+      this.ui.cyl.h.input.max = String(this.modelLimits.maxCylinder.h.toFixed(3));
+    }
   }
 
   _clampDimsToLimits(shape, dims) {
@@ -1335,7 +1682,7 @@ export class Hotspot3DViewer {
         y: clamp(dims.y, 0.02, this.modelLimits.maxBox.y),
         z: clamp(dims.z, 0.02, this.modelLimits.maxBox.z),
       };
-    } else { // cylinder
+    } else {
       return {
         r: clamp(dims.r, 0.01, this.modelLimits.maxCylinder.r),
         h: clamp(dims.h, 0.02, this.modelLimits.maxCylinder.h),
