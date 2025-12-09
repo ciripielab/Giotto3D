@@ -1,18 +1,19 @@
 // hotspot3d-viewer.js
 // Viewer 3D istanziabile con:
 // - Sphere / Box / Cylinder
-// - resize (solo input numerici), rotazioni, colore
-// - limiti dinamici dal bbox del modello
-// - TransformControls (gizmo 3D): translate / rotate / scale
-// - Position: X/Y/Z con input + +/-
-// - Rotation: rot X/Y/Z con input + +/- (solo box/cylinder)
-// - Scale: 
+// - Position: X/Y/Z (input + +/-)
+// - Rotation: Rot X/Y/Z (input + +/-) per box/cylinder
+// - Scale:
 //   - sphere: Raggio
 //   - box: Scale X/Y/Z
 //   - cylinder: Raggio + Altezza
+// - Color: color picker
+// - Opacity: slider 0–1 con etichetta numerica
+// - TransformControls: translate / rotate / scale
+// - Limiti dinamici dalla bounding box del modello
 
 import * as THREE from 'three';
-import { GLTFLoader }   from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
@@ -30,8 +31,8 @@ const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
 const POSITION_STEP = 0.01;
-const ROT_STEP = 1; // gradi per click su +/- rotazione
-const SCALE_STEP = 0.01;
+const ROT_STEP      = 1;    // gradi per click rot
+const SCALE_STEP    = 0.01; // step per scale / raggio
 
 export class Hotspot3DViewer {
   /**
@@ -56,28 +57,29 @@ export class Hotspot3DViewer {
     this.pendingModelUrl = '';
 
     // hotspot + selezione
-    this.hotspots = {}; // id -> Mesh
+    /** @type {Record<string,THREE.Mesh>} */
+    this.hotspots = {};
     this.selectedHotspotId = null;
 
-    // input
+    // input picking
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
     this.isDragging = false;
     this.dragStart = { x: 0, y: 0 };
 
     // modalità & creazione
-    this.currentMode = 'view';                 // 'view' | 'edit' | 'hide'
-    this.creationShape = 'sphere';             // 'sphere' | 'box' | 'cylinder'
+    this.currentMode = 'view';       // 'view' | 'edit' | 'hide'
+    this.creationShape = 'sphere';   // 'sphere' | 'box' | 'cylinder'
 
-    // limiti dinamici (dal bbox del modello)
+    // limiti dinamici dal modello
     this.modelLimits = {
       maxSphereR: 0.6,
       maxBox: { x: 1.0, y: 1.0, z: 1.0 },
       maxCylinder: { r: 0.6, h: 1.0 }
     };
     this.modelBounds = {
-      min: new THREE.Vector3(-1,-1,-1),
-      max: new THREE.Vector3( 1, 1, 1),
+      min: new THREE.Vector3(-1, -1, -1),
+      max: new THREE.Vector3( 1,  1,  1),
       center: new THREE.Vector3(0,0,0),
       size: new THREE.Vector3(2,2,2)
     };
@@ -85,14 +87,13 @@ export class Hotspot3DViewer {
     // UI refs
     this.ui = null;
 
-    // TransformControls + helper
+    // TransformControls
     this.transformControls = null;
     this.transformHelper   = null;
 
-    // stato del toggle gizmo nella UI
+    // stato gizmo
     this.gizmoEnabled = false;
-    // modalità del gizmo: 'translate' | 'rotate' | 'scale'
-    this.gizmoMode = 'translate';
+    this.gizmoMode = 'translate'; // 'translate' | 'rotate' | 'scale'
 
     // setup
     this._initScene(background);
@@ -125,37 +126,62 @@ export class Hotspot3DViewer {
     if (pointOfView) {
       this.camera.position.set(pointOfView.X, pointOfView.Y, pointOfView.Z);
       this.controls.update();
-      this._emit({ type: 'onPointOfViewChanged', payload: { ...pointOfView } });
+      this._emit({
+        type: 'onPointOfViewChanged',
+        payload: { ...pointOfView }
+      });
     }
 
-    // Hotspots
+    // Hotspot
     this._clearHotspots();
     for (const h of hotspots) {
       const shape = ['sphere','box','cylinder'].includes(h.shape) ? h.shape : 'sphere';
+
       let dims;
-      if (shape === 'sphere') dims = { r: (h.dims?.r ?? DEFAULT_SPHERE_R) };
-      else if (shape === 'box') dims = { x: (h.dims?.x ?? DEFAULT_BOX.x), y: (h.dims?.y ?? DEFAULT_BOX.y), z: (h.dims?.z ?? DEFAULT_BOX.z) };
-      else dims = { r: (h.dims?.r ?? DEFAULT_CYL.r), h: (h.dims?.h ?? DEFAULT_CYL.h) };
+      if (shape === 'sphere') {
+        dims = { r: (h.dims?.r ?? DEFAULT_SPHERE_R) };
+      } else if (shape === 'box') {
+        dims = {
+          x: (h.dims?.x ?? DEFAULT_BOX.x),
+          y: (h.dims?.y ?? DEFAULT_BOX.y),
+          z: (h.dims?.z ?? DEFAULT_BOX.z)
+        };
+      } else {
+        dims = {
+          r: (h.dims?.r ?? DEFAULT_CYL.r),
+          h: (h.dims?.h ?? DEFAULT_CYL.h)
+        };
+      }
       dims = this._clampDimsToLimits(shape, dims);
+
+      const num = (v, dflt) => Number.isFinite(v) ? v : dflt;
 
       const rot = (shape === 'box')
         ? { x: num(h.rot?.x, DEFAULT_BOX_ROT.x), y: num(h.rot?.y, DEFAULT_BOX_ROT.y), z: num(h.rot?.z, DEFAULT_BOX_ROT.z) }
         : (shape === 'cylinder')
         ? { x: num(h.rot?.x, DEFAULT_CYL_ROT.x), y: num(h.rot?.y, DEFAULT_CYL_ROT.y), z: num(h.rot?.z, DEFAULT_CYL_ROT.z) }
         : undefined;
-      const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
 
-      const mesh = this._createHotspot(h.Id, { x: h.X, y: h.Y, z: h.Z }, shape, dims, rot, colorHex);
+      const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
+      const opacity  = Number.isFinite(h.opacity) ? Math.min(Math.max(h.opacity, 0), 1) : 1;
+
+      const mesh = this._createHotspot(
+        h.Id,
+        { x: h.X, y: h.Y, z: h.Z },
+        shape,
+        dims,
+        rot,
+        colorHex,
+        opacity
+      );
       this.scene.add(mesh);
       this.hotspots[h.Id] = mesh;
     }
 
-    if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify:false });
-    else this._selectHotspot(null, { notify:false });
+    if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
+    else this._selectHotspot(null, { notify: false });
 
     this._syncAll();
-
-    function num(v, dflt) { return Number.isFinite(v) ? v : dflt; }
   }
 
   loadModel(url) {
@@ -176,7 +202,10 @@ export class Hotspot3DViewer {
       undefined,
       (error) => {
         this.pendingModelUrl = '';
-        this._emit({ type: 'onModelLoadError', payload: { url, message: String(error) } });
+        this._emit({
+          type: 'onModelLoadError',
+          payload: { url, message: String(error) }
+        });
         this._syncAll();
       }
     );
@@ -187,10 +216,12 @@ export class Hotspot3DViewer {
     if (this.currentMode !== 'edit') this._hideUI();
 
     this._updateTransformControls();
+    this._updateHelpersVisibility();
 
     this._emit({ type: 'onModeApplied', payload: { mode: this.currentMode } });
     this._syncAll();
   }
+  
 
   setCreationShape(shape) {
     if (['sphere','box','cylinder'].includes(shape)) this.creationShape = shape;
@@ -200,17 +231,23 @@ export class Hotspot3DViewer {
     try {
       const color = new THREE.Color(bg);
       this.scene.background = color;
-      this._emit({ type: 'onBackgroundChanged', payload: { color: color.getHexString() } });
+      this._emit({
+        type: 'onBackgroundChanged',
+        payload: { color: color.getHexString() }
+      });
     } catch (e) {
-      console.warn('Hotspot3DViewer.setBackground(): colore non valido:', bg, e);
+      console.warn('Hotspot3DViewer.setBackground(): colore non valido', bg, e);
     }
   }
 
-  highlightHotspot(id) { this._selectHotspot(id, { notify:false, color: HOTSPOT_HIGHLIGHT_COLOR }); }
-  getSharedData() { return this._buildSharedData(); }
-  requestSync() { this._syncAll(); }
+  highlightHotspot(id) {
+    this._selectHotspot(id, { notify:false, color: HOTSPOT_HIGHLIGHT_COLOR });
+  }
 
-  /* =============== INTERNALS =============== */
+  getSharedData() { return this._buildSharedData(); }
+  requestSync()    { this._syncAll(); }
+
+  /* =============== INTERNAL =============== */
 
   _initScene(background) {
     const cs = getComputedStyle(this.container);
@@ -224,17 +261,27 @@ export class Hotspot3DViewer {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this._updateRendererSize();
-    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.width  = '100%';
     this.renderer.domElement.style.height = '100%';
     this.container.appendChild(this.renderer.domElement);
 
-    // luci & helpers
+    // luci + helper
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+
     const dirLight = new THREE.DirectionalLight(0xffffff, 2);
     dirLight.position.set(2, 5, 2);
     this.scene.add(dirLight);
-    this.scene.add(new THREE.DirectionalLightHelper(dirLight, 0.3));
-    this.scene.add(new THREE.AxesHelper(1));
+
+    // Salva i riferimenti agli helper
+    this.lightHelper = new THREE.DirectionalLightHelper(dirLight, 0.3);
+    this.axesHelper  = new THREE.AxesHelper(1);
+
+    this.scene.add(this.lightHelper);
+    this.scene.add(this.axesHelper);
+
+    // imposta visibilità iniziale in base alla modalità corrente
+    this._updateHelpersVisibility();
+
 
     this.loader = new GLTFLoader();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -242,7 +289,11 @@ export class Hotspot3DViewer {
     this.controls.addEventListener('end', () => {
       this._emit({
         type: 'onPointOfViewChanged',
-        payload: { X: this.camera.position.x, Y: this.camera.position.y, Z: this.camera.position.z }
+        payload: {
+          X: this.camera.position.x,
+          Y: this.camera.position.y,
+          Z: this.camera.position.z
+        }
       });
       this._syncAll();
     });
@@ -251,13 +302,13 @@ export class Hotspot3DViewer {
     this._resizeObserver.observe(this.container);
     window.addEventListener('resize', this._updateRendererSize);
 
-    // TransformControls: uso l'helper per evitare l'errore Object3D.add
+    // TransformControls
     this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
     this.transformControls.setMode(this.gizmoMode);
     this.transformControls.setTranslationSnap(null);
     this.transformControls.size = 0.9;
 
-    // r181+: getHelper(); se non c’è, uso direttamente il controller
+    // r181+: helper da getHelper() se disponibile
     this.transformHelper = (typeof this.transformControls.getHelper === 'function')
       ? this.transformControls.getHelper()
       : this.transformControls;
@@ -267,18 +318,18 @@ export class Hotspot3DViewer {
       this.transformHelper.visible = false;
     }
 
-    // disabilita OrbitControls durante il drag
+    // disabilita Orbit mentre trascino
     this.transformControls.addEventListener('dragging-changed', (ev) => {
       this.controls.enabled = !ev.value;
     });
 
-    // SYNC live durante spostamento / rotazione / scala
+    // aggiornamento live con gizmo
     this.transformControls.addEventListener('objectChange', () => {
       if (!this.selectedHotspotId) return;
       const mesh = this.hotspots[this.selectedHotspotId];
       if (!mesh) return;
 
-      // ---- SCALA UNIFORME PER SPHERE ----
+      // scale uniforme per sphere
       if (this.gizmoMode === 'scale' && mesh.userData.shape === 'sphere') {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
@@ -287,7 +338,7 @@ export class Hotspot3DViewer {
         mesh.scale.set(s, s, s);
       }
 
-      // ---- SCALA "CILINDRO" PER CYLINDER ----
+      // scale cilindro: raggio sugli assi X/Z, altezza su Y
       if (this.gizmoMode === 'scale' && mesh.userData.shape === 'cylinder') {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
@@ -296,12 +347,10 @@ export class Hotspot3DViewer {
         mesh.scale.set(radial, sy, radial);
       }
 
-      // se sto traslando, aggiorno i campi X/Y/Z live
       if (this.gizmoMode === 'translate' && this.ui && this.selectedHotspotId === mesh.name) {
         this._updatePosFieldsFromMesh(mesh);
       }
 
-      // se sto ruotando, aggiorno i campi rot X/Y/Z live (solo box/cylinder)
       if (this.gizmoMode === 'rotate' && this.ui && this.selectedHotspotId === mesh.name) {
         if (mesh.userData.shape === 'box' || mesh.userData.shape === 'cylinder') {
           this._updateRotFieldsFromMesh(mesh);
@@ -311,7 +360,7 @@ export class Hotspot3DViewer {
       this._syncAll();
     });
 
-    // commit al rilascio → onHotspotUpdated / resize / rot
+    // commit al mouseUp
     this.transformControls.addEventListener('mouseUp', () => {
       if (!this.selectedHotspotId) return;
       const mesh = this.hotspots[this.selectedHotspotId];
@@ -319,7 +368,7 @@ export class Hotspot3DViewer {
 
       const ud = mesh.userData || {};
 
-      // GIZMO MODE: SCALE → aggiorna dims e ricrea geometria
+      // scala
       if (this.gizmoMode === 'scale') {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
@@ -354,7 +403,7 @@ export class Hotspot3DViewer {
         }
       }
 
-      // GIZMO MODE: ROTATE → aggiorna userData.rot
+      // rotazione
       if (this.gizmoMode === 'rotate') {
         if (ud.shape === 'box' || ud.shape === 'cylinder') {
           ud.rot = {
@@ -367,14 +416,15 @@ export class Hotspot3DViewer {
         }
       }
 
-      // GIZMO MODE: TRANSLATE (o generico) → aggiorna posizione
+      // traslazione (o generico)
       const p = mesh.position;
       const payload = {
         Id: this.selectedHotspotId,
         X: p.x, Y: p.y, Z: p.z,
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
-        color: ud.color
+        color: ud.color,
+        opacity: ud.opacity
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -399,36 +449,11 @@ export class Hotspot3DViewer {
     this.renderer.render(this.scene, this.camera);
   };
 
-  // helper usato ancora da qualche blocco (ok se resta, anche se poco usato)
-  _mkRow(labelText) {
-    const row = document.createElement('div');
-    row.style.display = 'grid';
-    row.style.gridTemplateColumns = '1fr 80px';
-    row.style.gap = '8px';
-    row.style.alignItems = 'center';
-    row.style.margin = '6px 0';
-
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    label.style.fontSize = '12px';
-    label.style.opacity = '.8';
-
-    const value = document.createElement('span');
-    value.className = 'small';
-    value.style.fontSize = '12px';
-    value.style.opacity = '.6';
-    value.textContent = '';
-
-    row.appendChild(label);
-    row.appendChild(value);
-    return { row, value };
-  }
-
   _mountUI() {
     const root = document.createElement('div');
     Object.assign(root.style, {
       position: 'absolute', right: '12px', top: '12px', zIndex: '10',
-      minWidth: '260px', maxWidth: '360px',
+      minWidth: '220px', maxWidth: '280px',
       background: 'rgba(255,255,255,0.9)', color: '#111',
       borderRadius: '10px', padding: '10px 12px',
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
@@ -441,7 +466,7 @@ export class Hotspot3DViewer {
     title.textContent = 'Hotspot';
     root.appendChild(title);
 
-    // ========== TOP BAR: Gizmo + Mode ==========
+    // ===== TOP BAR Gizmo + Mode =====
     const topBar = document.createElement('div');
     Object.assign(topBar.style, {
       display: 'flex',
@@ -501,7 +526,6 @@ export class Hotspot3DViewer {
       <option value="scale">Scale</option>
     `;
     modeSelect.value = this.gizmoMode;
-
     modeSelect.addEventListener('change', () => {
       this.gizmoMode = modeSelect.value;
       if (this.transformControls) this.transformControls.setMode(this.gizmoMode);
@@ -513,10 +537,8 @@ export class Hotspot3DViewer {
     topBar.appendChild(modeSelect);
     root.appendChild(topBar);
 
-    // ========== POSITION BLOCK ==========
-
+    // ===== POSITION BLOCK =====
     const posBlock = document.createElement('div');
-
     const posTitle = document.createElement('div');
     posTitle.textContent = 'Position';
     posTitle.style.fontSize = '12px';
@@ -524,7 +546,7 @@ export class Hotspot3DViewer {
     posTitle.style.marginBottom = '4px';
     posBlock.appendChild(posTitle);
 
-    const makePosRow = (axisLabel) => {
+    const makeAxisRow = (axisLabel) => {
       const row = document.createElement('div');
       Object.assign(row.style, {
         display: 'flex',
@@ -583,18 +605,15 @@ export class Hotspot3DViewer {
       return { row, input, btnMinus, btnPlus };
     };
 
-    const posRowX = makePosRow('X');
-    const posRowY = makePosRow('Y');
-    const posRowZ = makePosRow('Z');
-
+    const posRowX = makeAxisRow('X');
+    const posRowY = makeAxisRow('Y');
+    const posRowZ = makeAxisRow('Z');
     posBlock.appendChild(posRowX.row);
     posBlock.appendChild(posRowY.row);
     posBlock.appendChild(posRowZ.row);
 
-    // ========== ROTATION BLOCK (input + +/-) ==========
-
+    // ===== ROTATION BLOCK =====
     const rotBlock = document.createElement('div');
-
     const rotTitle = document.createElement('div');
     rotTitle.textContent = 'Rotation (°)';
     rotTitle.style.fontSize = '12px';
@@ -666,12 +685,11 @@ export class Hotspot3DViewer {
     const rotRowX = makeRotRow('Rot X');
     const rotRowY = makeRotRow('Rot Y');
     const rotRowZ = makeRotRow('Rot Z');
-
     rotBlock.appendChild(rotRowX.row);
     rotBlock.appendChild(rotRowY.row);
     rotBlock.appendChild(rotRowZ.row);
 
-    // ========== SCALE BLOCKS (solo input, niente slider) ==========
+    // ===== SCALE BLOCKS (solo input) =====
 
     const makeScaleRow = (labelText) => {
       const row = document.createElement('div');
@@ -732,7 +750,7 @@ export class Hotspot3DViewer {
       return { row, input, btnMinus, btnPlus };
     };
 
-    // sphere: solo Raggio
+    // sphere: raggio
     const sphereBlock = document.createElement('div');
     const sphTitle = document.createElement('div');
     sphTitle.textContent = 'Scale (Sphere)';
@@ -740,11 +758,10 @@ export class Hotspot3DViewer {
     sphTitle.style.opacity = '.8';
     sphTitle.style.margin = '8px 0 4px 0';
     sphereBlock.appendChild(sphTitle);
-
     const sphRow = makeScaleRow('Raggio');
     sphereBlock.appendChild(sphRow.row);
 
-    // box: Scale X/Y/Z
+    // box: scale X/Y/Z
     const boxBlock = document.createElement('div');
     const boxTitle = document.createElement('div');
     boxTitle.textContent = 'Scale (Box)';
@@ -752,7 +769,6 @@ export class Hotspot3DViewer {
     boxTitle.style.opacity = '.8';
     boxTitle.style.margin = '8px 0 4px 0';
     boxBlock.appendChild(boxTitle);
-
     const boxRowX = makeScaleRow('Scale X');
     const boxRowY = makeScaleRow('Scale Y');
     const boxRowZ = makeScaleRow('Scale Z');
@@ -760,7 +776,7 @@ export class Hotspot3DViewer {
     boxBlock.appendChild(boxRowY.row);
     boxBlock.appendChild(boxRowZ.row);
 
-    // cylinder: Raggio, Altezza
+    // cylinder: raggio, altezza
     const cylBlock = document.createElement('div');
     const cylTitle = document.createElement('div');
     cylTitle.textContent = 'Scale (Cylinder)';
@@ -768,26 +784,64 @@ export class Hotspot3DViewer {
     cylTitle.style.opacity = '.8';
     cylTitle.style.margin = '8px 0 4px 0';
     cylBlock.appendChild(cylTitle);
-
     const cylRowR = makeScaleRow('Raggio');
     const cylRowH = makeScaleRow('Altezza');
     cylBlock.appendChild(cylRowR.row);
     cylBlock.appendChild(cylRowH.row);
 
-    // ========== COLOR & ACTIONS ==========
+    // ===== COLOR & OPACITY =====
 
     const colorBlock = document.createElement('div');
     const colorLabel = document.createElement('label');
-    colorLabel.textContent = 'color'; colorLabel.style.display = 'block';
-    colorLabel.style.fontSize = '12px'; colorLabel.style.opacity = '.8';
+    colorLabel.textContent = 'color';
+    colorLabel.style.display = 'block';
+    colorLabel.style.fontSize = '12px';
+    colorLabel.style.opacity = '.8';
+
     const colorInput = document.createElement('input');
-    colorInput.type = 'color'; colorInput.value = DEFAULT_HOTSPOT_HEX;
-    colorInput.style.width = '100%'; colorInput.style.height = '32px';
-    colorInput.style.padding = '0'; colorInput.style.border = '1px solid #00000030';
+    colorInput.type = 'color';
+    colorInput.value = DEFAULT_HOTSPOT_HEX;
+    colorInput.style.width = '100%';
+    colorInput.style.height = '32px';
+    colorInput.style.padding = '0';
+    colorInput.style.border = '1px solid #00000030';
     colorInput.style.borderRadius = '6px';
-    colorBlock.appendChild(colorLabel); 
+
+    colorBlock.appendChild(colorLabel);
     colorBlock.appendChild(colorInput);
 
+    // Opacity
+    const opacityBlock = document.createElement('div');
+    opacityBlock.style.marginTop = '6px';
+
+    const opacityLabel = document.createElement('label');
+    opacityLabel.textContent = 'opacity';
+    opacityLabel.style.display = 'flex';
+    opacityLabel.style.alignItems = 'center';
+    opacityLabel.style.justifyContent = 'space-between';
+    opacityLabel.style.fontSize = '12px';
+    opacityLabel.style.opacity = '.8';
+
+    const opacityValueLabel = document.createElement('span');
+    opacityValueLabel.textContent = '1.00';
+    opacityValueLabel.style.fontSize = '11px';
+    opacityValueLabel.style.opacity = '.7';
+
+    opacityLabel.appendChild(document.createTextNode('opacity'));
+    opacityLabel.appendChild(opacityValueLabel);
+
+    const opacitySlider = document.createElement('input');
+    opacitySlider.type = 'range';
+    opacitySlider.min = '0';
+    opacitySlider.max = '1';
+    opacitySlider.step = '0.01';
+    opacitySlider.value = '1';
+    opacitySlider.style.width = '100%';
+
+    opacityBlock.appendChild(opacityLabel);
+    opacityBlock.appendChild(opacitySlider);
+
+    // ===== ACTIONS =====
     const actions = document.createElement('div');
     Object.assign(actions.style, {
       display: 'flex',
@@ -825,16 +879,17 @@ export class Hotspot3DViewer {
     actions.appendChild(btnDelete);
     actions.appendChild(btnClose);
 
-    // === ORDINE UI: Position → Rotation → Scale → Color → Actions ===
+    // ordine UI
     root.appendChild(posBlock);
     root.appendChild(rotBlock);
     root.appendChild(sphereBlock);
     root.appendChild(boxBlock);
     root.appendChild(cylBlock);
     root.appendChild(colorBlock);
+    root.appendChild(opacityBlock);
     root.appendChild(actions);
 
-    // refs
+    // ===== memorizzazione refs UI =====
     this.ui = {
       root, title,
       pos: {
@@ -865,19 +920,20 @@ export class Hotspot3DViewer {
         z: { input: rotRowZ.input, dec: rotRowZ.btnMinus, inc: rotRowZ.btnPlus },
       },
       color: { block: colorBlock, input: colorInput },
+      opacity: { block: opacityBlock, slider: opacitySlider, label: opacityValueLabel },
       btnDelete, btnClose,
       btnGizmo,
       updateGizmoButtonUI,
       modeSelect
     };
 
-    // listeners UI
+    // ===== listeners UI =====
     btnClose.addEventListener('click', () => this._hideUI());
     btnDelete.addEventListener('click', () => {
       if (this.selectedHotspotId) this._removeHotspot(this.selectedHotspotId);
     });
 
-    // --- POSIZIONE: input X/Y/Z + pulsanti +/- ---
+    // posizione: input + +/- 
     const applyAxisValue = (axis) => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh) return;
@@ -899,7 +955,8 @@ export class Hotspot3DViewer {
         X: p.x, Y: p.y, Z: p.z,
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
-        color: ud.color
+        color: ud.color,
+        opacity: ud.opacity
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -927,7 +984,8 @@ export class Hotspot3DViewer {
         X: p.x, Y: p.y, Z: p.z,
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
-        color: ud.color
+        color: ud.color,
+        opacity: ud.opacity
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -939,26 +997,22 @@ export class Hotspot3DViewer {
 
       uiAxis.input.addEventListener('change', () => applyAxisValue(axis));
       uiAxis.input.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') {
-          applyAxisValue(axis);
-        }
+        if (ev.key === 'Enter') applyAxisValue(axis);
       });
 
       uiAxis.dec.addEventListener('click', () => applyAxisStep(axis, -1));
       uiAxis.inc.addEventListener('click', () => applyAxisStep(axis, +1));
     });
 
-    // --- SCALE: sphere (Raggio) ---
+    // scale sphere (raggio)
     const applySphereRadiusValue = () => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'sphere') return;
 
       let r = parseFloat(this.ui.sphere.r.input.value);
       if (!Number.isFinite(r)) return;
-
       r = Math.max(0.01, Math.min(r, this.modelLimits.maxSphereR));
       this.ui.sphere.r.input.value = r.toFixed(3);
-
       this._resizeSelectedSphere(r, true);
     };
 
@@ -971,7 +1025,6 @@ export class Hotspot3DViewer {
       r += sign * SCALE_STEP;
       r = Math.max(0.01, Math.min(r, this.modelLimits.maxSphereR));
       this._resizeSelectedSphere(r, true);
-
       if (this.ui.sphere?.r?.input) {
         this.ui.sphere.r.input.value = r.toFixed(3);
       }
@@ -984,7 +1037,7 @@ export class Hotspot3DViewer {
     this.ui.sphere.r.dec.addEventListener('click', () => applySphereRadiusStep(-1));
     this.ui.sphere.r.inc.addEventListener('click', () => applySphereRadiusStep(+1));
 
-    // --- SCALE: box (Scale X/Y/Z) ---
+    // scale box
     const applyBoxDims = () => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'box') return;
@@ -1031,7 +1084,7 @@ export class Hotspot3DViewer {
       uiAxis.inc.addEventListener('click', () => applyBoxStep(axis, +1));
     });
 
-    // --- SCALE: cylinder (Raggio, Altezza) ---
+    // scale cylinder
     const applyCylDims = () => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'cylinder') return;
@@ -1074,7 +1127,7 @@ export class Hotspot3DViewer {
     this.ui.cyl.h.dec.addEventListener('click', () => applyCylStep('h', -1));
     this.ui.cyl.h.inc.addEventListener('click', () => applyCylStep('h', +1));
 
-    // --- ROTAZIONE: input + +/- ---
+    // rotazione: input + +/-
     const applyRotAxisValue = (axis) => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh) return;
@@ -1105,7 +1158,8 @@ export class Hotspot3DViewer {
         shape: mesh.userData.shape,
         dims: { ...mesh.userData.dims },
         rot: { ...mesh.userData.rot },
-        color: mesh.userData.color
+        color: mesh.userData.color,
+        opacity: mesh.userData.opacity
       };
       this._emit({ type: 'onHotspotUpdated', payload });
       this._syncAll();
@@ -1143,7 +1197,8 @@ export class Hotspot3DViewer {
         shape: mesh.userData.shape,
         dims: { ...mesh.userData.dims },
         rot: { ...mesh.userData.rot },
-        color: mesh.userData.color
+        color: mesh.userData.color,
+        opacity: mesh.userData.opacity
       };
       this._emit({ type: 'onHotspotUpdated', payload });
       this._syncAll();
@@ -1154,28 +1209,31 @@ export class Hotspot3DViewer {
 
       uiAxis.input.addEventListener('change', () => applyRotAxisValue(axis));
       uiAxis.input.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') {
-          applyRotAxisValue(axis);
-        }
+        if (ev.key === 'Enter') applyRotAxisValue(axis);
       });
 
       uiAxis.dec.addEventListener('click', () => applyRotAxisStep(axis, -1));
       uiAxis.inc.addEventListener('click', () => applyRotAxisStep(axis, +1));
     });
 
-    // --- colore ---
+    // colore
     const onColorChange = () => {
       const id = this.selectedHotspotId; if (!id) return;
       const mesh = this.hotspots[id]; if (!mesh) return;
       const hex = this.ui.color.input.value || DEFAULT_HOTSPOT_HEX;
       mesh.userData.color = normalizeHex(hex);
-      if (this.selectedHotspotId !== id) mesh.material.color.set(mesh.userData.color);
+      // il selezionato ha colore di evidenza; per gli altri usiamo userData.color
+      if (this.selectedHotspotId !== id) {
+        mesh.material.color.set(mesh.userData.color);
+      }
       const c = mesh.position;
       const payload = {
-        Id: id, X: c.x, Y: c.y, Z: c.z,
+        Id: id,
+        X: c.x, Y: c.y, Z: c.z,
         shape: mesh.userData.shape,
         dims: { ...mesh.userData.dims },
-        color: mesh.userData.color
+        color: mesh.userData.color,
+        opacity: mesh.userData.opacity
       };
       if (mesh.userData.rot) payload.rot = { ...mesh.userData.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -1184,7 +1242,39 @@ export class Hotspot3DViewer {
     this.ui.color.input.addEventListener('input', onColorChange);
     this.ui.color.input.addEventListener('change', onColorChange);
 
-    // monta UI
+    // opacity
+    const onOpacityChange = () => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh) return;
+
+      let v = parseFloat(this.ui.opacity.slider.value);
+      if (!Number.isFinite(v)) v = 1;
+      v = Math.min(Math.max(v, 0), 1);
+      this.ui.opacity.slider.value = v.toString();
+      this.ui.opacity.label.textContent = v.toFixed(2);
+
+      mesh.userData.opacity = v;
+      mesh.material.opacity = v;
+      mesh.material.transparent = v < 1;
+      mesh.material.needsUpdate = true;
+
+      const ud = mesh.userData || {};
+      const p = mesh.position;
+      const payload = {
+        Id: id,
+        X: p.x, Y: p.y, Z: p.z,
+        shape: ud.shape,
+        dims: { ...(ud.dims || {}) },
+        color: ud.color,
+        opacity: ud.opacity
+      };
+      if (ud.rot) payload.rot = { ...ud.rot };
+      this._emit({ type: 'onHotspotUpdated', payload });
+      this._syncAll();
+    };
+    this.ui.opacity.slider.addEventListener('input', onOpacityChange);
+    this.ui.opacity.slider.addEventListener('change', onOpacityChange);
+
     this.container.appendChild(root);
     this._applyLimitsToUI();
   }
@@ -1231,6 +1321,9 @@ export class Hotspot3DViewer {
       const dims  = mesh.userData?.dims  || {};
       const rot   = mesh.userData?.rot;
       const colorHex = mesh.userData?.color || DEFAULT_HOTSPOT_HEX;
+      const opacity  = Number.isFinite(mesh.userData?.opacity)
+        ? mesh.userData.opacity
+        : (mesh.material.opacity ?? 1);
 
       const base = {
         Id,
@@ -1239,10 +1332,19 @@ export class Hotspot3DViewer {
         dims: (shape === 'sphere')
           ? { r: dims?.r ?? DEFAULT_SPHERE_R }
           : (shape === 'box')
-          ? { x: dims?.x ?? DEFAULT_BOX.x, y: dims?.y ?? DEFAULT_BOX.y, z: dims?.z ?? DEFAULT_BOX.z }
-          : { r: dims?.r ?? DEFAULT_CYL.r, h: dims?.h ?? DEFAULT_CYL.h },
-        color: colorHex
+          ? {
+              x: dims?.x ?? DEFAULT_BOX.x,
+              y: dims?.y ?? DEFAULT_BOX.y,
+              z: dims?.z ?? DEFAULT_BOX.z
+            }
+          : {
+              r: dims?.r ?? DEFAULT_CYL.r,
+              h: dims?.h ?? DEFAULT_CYL.h
+            },
+        color: colorHex,
+        opacity
       };
+
       if (shape === 'box' || shape === 'cylinder') {
         base.rot = {
           x: Number.isFinite(rot?.x) ? rot.x : (mesh.rotation.x * RAD2DEG),
@@ -1250,18 +1352,25 @@ export class Hotspot3DViewer {
           z: Number.isFinite(rot?.z) ? rot.z : (mesh.rotation.z * RAD2DEG),
         };
       }
+
       return base;
     });
 
     return {
       mode: this.currentMode,
       model3D: (this.currentModelUrl || this.pendingModelUrl || ''),
-      pointOfView: { X: this.camera.position.x, Y: this.camera.position.y, Z: this.camera.position.z },
+      pointOfView: {
+        X: this.camera.position.x,
+        Y: this.camera.position.y,
+        Z: this.camera.position.z
+      },
       hotspots: list,
     };
   }
 
-  _syncAll() { this._emit({ type: 'SYNC_DATA', payload: this._buildSharedData() }); }
+  _syncAll() {
+    this._emit({ type: 'SYNC_DATA', payload: this._buildSharedData() });
+  }
 
   _removeModel() {
     if (!this.model) return;
@@ -1294,10 +1403,16 @@ export class Hotspot3DViewer {
     const hotspotMeshes = Object.values(this.hotspots);
     if (hotspotMeshes.length > 0) {
       const hotspotHit = this.raycaster.intersectObjects(hotspotMeshes, false);
-      if (hotspotHit.length > 0) { this._selectHotspot(hotspotHit[0].object.name); return; }
+      if (hotspotHit.length > 0) {
+        this._selectHotspot(hotspotHit[0].object.name);
+        return;
+      }
     }
 
-    if (this.currentMode !== 'edit') { this._selectHotspot(null); return; }
+    if (this.currentMode !== 'edit') {
+      this._selectHotspot(null);
+      return;
+    }
 
     if (!this.model) return;
     const intersects = this.raycaster.intersectObject(this.model, true);
@@ -1308,19 +1423,36 @@ export class Hotspot3DViewer {
     const shape = this.creationShape;
 
     let dims, rot;
-    if (shape === 'sphere') { dims = { r: DEFAULT_SPHERE_R }; rot = undefined; }
-    else if (shape === 'box') { dims = { ...DEFAULT_BOX }; rot = { ...DEFAULT_BOX_ROT }; }
-    else { dims = { ...DEFAULT_CYL }; rot = { ...DEFAULT_CYL_ROT }; }
+    if (shape === 'sphere') {
+      dims = { r: DEFAULT_SPHERE_R };
+      rot = undefined;
+    } else if (shape === 'box') {
+      dims = { ...DEFAULT_BOX };
+      rot = { ...DEFAULT_BOX_ROT };
+    } else {
+      dims = { ...DEFAULT_CYL };
+      rot = { ...DEFAULT_CYL_ROT };
+    }
     dims = this._clampDimsToLimits(shape, dims);
-    const colorHex = DEFAULT_HOTSPOT_HEX;
 
-    const mesh = this._createHotspot(newId, point, shape, dims, rot, colorHex);
+    const colorHex = DEFAULT_HOTSPOT_HEX;
+    const opacity  = 1.0;
+
+    const mesh = this._createHotspot(newId, point, shape, dims, rot, colorHex, opacity);
     this.scene.add(mesh);
     this.hotspots[newId] = mesh;
     this._selectHotspot(newId);
 
-    const payload = { Id: newId, X: point.x, Y: point.y, Z: point.z, shape, dims, color: colorHex };
+    const payload = {
+      Id: newId,
+      X: point.x, Y: point.y, Z: point.z,
+      shape,
+      dims,
+      color: colorHex,
+      opacity
+    };
     if (rot) payload.rot = rot;
+
     this._emit({ type: 'onHotspotAdded', payload });
     this._syncAll();
   }
@@ -1340,13 +1472,17 @@ export class Hotspot3DViewer {
     delete this.hotspots[id];
 
     const wasSelected = this.selectedHotspotId === id;
-    if (wasSelected) { this.selectedHotspotId = null; this._hideUI(); }
+    if (wasSelected) {
+      this.selectedHotspotId = null;
+      this._hideUI();
+    }
 
     this._emit({ type: 'onHotspotRemoved', payload: { Id: id } });
     this._syncAll();
   }
 
   _selectHotspot(id, { notify = true, color = HOTSPOT_SELECTED_COLOR } = {}) {
+    // ripristina colore base
     if (this.selectedHotspotId && this.hotspots[this.selectedHotspotId]) {
       const prev = this.hotspots[this.selectedHotspotId];
       const baseHex = prev.userData?.color || DEFAULT_HOTSPOT_HEX;
@@ -1371,7 +1507,9 @@ export class Hotspot3DViewer {
     if (notify) this._emit({ type: 'onHotspotSelected', payload: { Id: id } });
     this._syncAll();
 
-    if (this.currentMode === 'edit') this._showUIFor(mesh);
+    if (this.currentMode === 'edit') {
+      this._showUIFor(mesh);
+    }
   }
 
   _updateTransformControls() {
@@ -1394,7 +1532,23 @@ export class Hotspot3DViewer {
     }
   }
 
-  _createHotspot(id, pos, shape = 'sphere', dims = { r: DEFAULT_SPHERE_R }, rotDeg, colorHex = DEFAULT_HOTSPOT_HEX) {
+
+  _updateHelpersVisibility() {
+    const visible = (this.currentMode === 'edit');
+    if (this.axesHelper)  this.axesHelper.visible  = visible;
+    if (this.lightHelper) this.lightHelper.visible = visible;
+  }
+
+
+  _createHotspot(
+    id,
+    pos,
+    shape = 'sphere',
+    dims = { r: DEFAULT_SPHERE_R },
+    rotDeg,
+    colorHex = DEFAULT_HOTSPOT_HEX,
+    opacity = 1.0
+  ) {
     let geom;
     if (shape === 'box') {
       const dx = dims?.x ?? DEFAULT_BOX.x;
@@ -1412,22 +1566,47 @@ export class Hotspot3DViewer {
     }
 
     const mat = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+    const o = Number.isFinite(opacity) ? Math.min(Math.max(opacity, 0), 1) : 1;
+    mat.opacity = o;
+    mat.transparent = o < 1;
+
     const mesh = new THREE.Mesh(geom, mat);
     mesh.position.set(pos.x ?? pos?.x, pos.y ?? pos?.y, pos.z ?? pos?.z);
     mesh.name = id;
 
-    if (shape === 'sphere') mesh.userData.dims = { r: dims?.r ?? DEFAULT_SPHERE_R };
-    else if (shape === 'box') mesh.userData.dims = { x: dims?.x ?? DEFAULT_BOX.x, y: dims?.y ?? DEFAULT_BOX.y, z: dims?.z ?? DEFAULT_BOX.z };
-    else mesh.userData.dims = { r: dims?.r ?? DEFAULT_CYL.r, h: dims?.h ?? DEFAULT_CYL.h };
+    if (shape === 'sphere') {
+      mesh.userData.dims = { r: dims?.r ?? DEFAULT_SPHERE_R };
+    } else if (shape === 'box') {
+      mesh.userData.dims = {
+        x: dims?.x ?? DEFAULT_BOX.x,
+        y: dims?.y ?? DEFAULT_BOX.y,
+        z: dims?.z ?? DEFAULT_BOX.z
+      };
+    } else {
+      mesh.userData.dims = {
+        r: dims?.r ?? DEFAULT_CYL.r,
+        h: dims?.h ?? DEFAULT_CYL.h
+      };
+    }
 
     mesh.userData.shape = shape;
     mesh.userData.color = normalizeHex(colorHex);
+    mesh.userData.opacity = o;
+
     mesh.material.color.set(mesh.userData.color);
 
     if (shape === 'box' || shape === 'cylinder') {
       const r = rotDeg || (shape === 'box' ? DEFAULT_BOX_ROT : DEFAULT_CYL_ROT);
-      mesh.userData.rot = { x: r.x ?? 0, y: r.y ?? 0, z: r.z ?? 0 };
-      mesh.rotation.set((r.x ?? 0) * DEG2RAD, (r.y ?? 0) * DEG2RAD, (r.z ?? 0) * DEG2RAD);
+      mesh.userData.rot = {
+        x: r.x ?? 0,
+        y: r.y ?? 0,
+        z: r.z ?? 0
+      };
+      mesh.rotation.set(
+        (mesh.userData.rot.x) * DEG2RAD,
+        (mesh.userData.rot.y) * DEG2RAD,
+        (mesh.userData.rot.z) * DEG2RAD
+      );
     }
 
     return mesh;
@@ -1451,19 +1630,16 @@ export class Hotspot3DViewer {
     this._updatePosFieldsFromMesh(mesh);
 
     if (shape === 'sphere') {
-      const c = this._clampDimsToLimits('sphere', dims); 
+      const c = this._clampDimsToLimits('sphere', dims);
       if (c.r !== dims.r) { dims = c; mesh.userData.dims = c; }
-
       this.ui.sphere.block.style.display = 'block';
-      if (this.ui.sphere.r.input) {
-        this.ui.sphere.r.input.value = (dims.r ?? DEFAULT_SPHERE_R).toFixed(3);
-      }
-
-      // nessuna rotazione per sphere
-
+      this.ui.sphere.r.input.value = (dims.r ?? DEFAULT_SPHERE_R).toFixed(3);
     } else if (shape === 'box') {
       const c = this._clampDimsToLimits('box', dims);
-      if (c.x !== dims.x || c.y !== dims.y || c.z !== dims.z) { mesh.userData.dims = c; dims = c; }
+      if (c.x !== dims.x || c.y !== dims.y || c.z !== dims.z) {
+        mesh.userData.dims = c;
+        dims = c;
+      }
       this.ui.box.block.style.display = 'block';
       this.ui.rot.block.style.display = 'block';
 
@@ -1472,10 +1648,12 @@ export class Hotspot3DViewer {
       this.ui.box.z.input.value = (dims.z ?? DEFAULT_BOX.z).toFixed(3);
 
       this._updateRotFieldsFromMesh(mesh);
-
     } else { // cylinder
-      const c = this._clampDimsToLimits('cylinder', dims); 
-      if (c.r !== dims.r || c.h !== dims.h) { mesh.userData.dims = c; dims = c; }
+      const c = this._clampDimsToLimits('cylinder', dims);
+      if (c.r !== dims.r || c.h !== dims.h) {
+        mesh.userData.dims = c;
+        dims = c;
+      }
       this.ui.cyl.block.style.display = 'block';
       this.ui.rot.block.style.display = 'block';
 
@@ -1489,6 +1667,13 @@ export class Hotspot3DViewer {
     this.ui.color.block.style.display = 'block';
     this.ui.color.input.value = baseHex;
 
+    const op = Number.isFinite(mesh.userData?.opacity)
+      ? mesh.userData.opacity
+      : (mesh.material.opacity ?? 1);
+    this.ui.opacity.block.style.display = 'block';
+    this.ui.opacity.slider.value = op.toString();
+    this.ui.opacity.label.textContent = op.toFixed(2);
+
     if (this.ui.modeSelect) this.ui.modeSelect.value = this.gizmoMode;
 
     this.ui.root.style.display = 'block';
@@ -1500,6 +1685,7 @@ export class Hotspot3DViewer {
     this.ui.btnDelete.disabled = true;
     this.ui.rot.block.style.display = 'none';
     this.ui.color.block.style.display = 'none';
+    this.ui.opacity.block.style.display = 'none';
   }
 
   _updatePosFieldsFromMesh(mesh) {
@@ -1544,11 +1730,16 @@ export class Hotspot3DViewer {
     if (commit) {
       this._emit({
         type: 'onHotspotUpdated',
-        payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'sphere', dims: { r }, color: mesh.userData.color }
+        payload: {
+          Id: id,
+          X: center.x, Y: center.y, Z: center.z,
+          shape: 'sphere',
+          dims: { r },
+          color: mesh.userData.color,
+          opacity: mesh.userData.opacity
+        }
       });
-      if (this.ui && this.selectedHotspotId === id) {
-        this._showUIFor(mesh);
-      }
+      if (this.ui && this.selectedHotspotId === id) this._showUIFor(mesh);
     }
     this._syncAll();
   }
@@ -1557,10 +1748,13 @@ export class Hotspot3DViewer {
     const id = this.selectedHotspotId; if (!id) return;
     const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'box') return;
 
-    const c = this._clampDimsToLimits('box', dims); dims = c;
+    const c = this._clampDimsToLimits('box', dims);
+    dims = c;
     const center = mesh.position.clone();
     const rot = mesh.userData.rot || DEFAULT_BOX_ROT;
-    const rx = (rot.x || 0) * DEG2RAD, ry = (rot.y || 0) * DEG2RAD, rz = (rot.z || 0) * DEG2RAD;
+    const rx = (rot.x || 0) * DEG2RAD;
+    const ry = (rot.y || 0) * DEG2RAD;
+    const rz = (rot.z || 0) * DEG2RAD;
 
     mesh.geometry.dispose();
     mesh.geometry = new THREE.BoxGeometry(dims.x, dims.y, dims.z);
@@ -1571,11 +1765,17 @@ export class Hotspot3DViewer {
     if (commit) {
       this._emit({
         type: 'onHotspotUpdated',
-        payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'box', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
+        payload: {
+          Id: id,
+          X: center.x, Y: center.y, Z: center.z,
+          shape: 'box',
+          dims: { ...dims },
+          rot: { ...mesh.userData.rot },
+          color: mesh.userData.color,
+          opacity: mesh.userData.opacity
+        }
       });
-      if (this.ui && this.selectedHotspotId === id) {
-        this._showUIFor(mesh);
-      }
+      if (this.ui && this.selectedHotspotId === id) this._showUIFor(mesh);
     }
     this._syncAll();
   }
@@ -1584,10 +1784,13 @@ export class Hotspot3DViewer {
     const id = this.selectedHotspotId; if (!id) return;
     const mesh = this.hotspots[id]; if (!mesh || mesh.userData.shape !== 'cylinder') return;
 
-    const c = this._clampDimsToLimits('cylinder', dims); dims = c;
+    const c = this._clampDimsToLimits('cylinder', dims);
+    dims = c;
     const center = mesh.position.clone();
     const rot = mesh.userData.rot || DEFAULT_CYL_ROT;
-    const rx = (rot.x || 0) * DEG2RAD, ry = (rot.y || 0) * DEG2RAD, rz = (rot.z || 0) * DEG2RAD;
+    const rx = (rot.x || 0) * DEG2RAD;
+    const ry = (rot.y || 0) * DEG2RAD;
+    const rz = (rot.z || 0) * DEG2RAD;
 
     mesh.geometry.dispose();
     mesh.geometry = new THREE.CylinderGeometry(dims.r, dims.r, dims.h, 16, 1);
@@ -1598,16 +1801,22 @@ export class Hotspot3DViewer {
     if (commit) {
       this._emit({
         type: 'onHotspotUpdated',
-        payload: { Id: id, X: center.x, Y: center.y, Z: center.z, shape: 'cylinder', dims: { ...dims }, rot: { ...mesh.userData.rot }, color: mesh.userData.color }
+        payload: {
+          Id: id,
+          X: center.x, Y: center.y, Z: center.z,
+          shape: 'cylinder',
+          dims: { ...dims },
+          rot: { ...mesh.userData.rot },
+          color: mesh.userData.color,
+          opacity: mesh.userData.opacity
+        }
       });
-      if (this.ui && this.selectedHotspotId === id) {
-        this._showUIFor(mesh);
-      }
+      if (this.ui && this.selectedHotspotId === id) this._showUIFor(mesh);
     }
     this._syncAll();
   }
 
-  /* ===== limiti dinamici dal bbox ===== */
+  /* ===== limiti dinamici dal modello ===== */
 
   _recomputeLimitsFromModel() {
     if (!this.model) {
@@ -1615,14 +1824,15 @@ export class Hotspot3DViewer {
       this.modelLimits.maxBox = { x: 1.0, y: 1.0, z: 1.0 };
       this.modelLimits.maxCylinder = { r: 0.6, h: 1.0 };
 
-      this.modelBounds.min.set(-1,-1,-1);
-      this.modelBounds.max.set( 1, 1, 1);
+      this.modelBounds.min.set(-1, -1, -1);
+      this.modelBounds.max.set( 1,  1,  1);
       this.modelBounds.center.set(0,0,0);
       this.modelBounds.size.set(2,2,2);
 
       this._applyLimitsToUI();
       return;
     }
+
     const box = new THREE.Box3().setFromObject(this.model);
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
@@ -1635,7 +1845,10 @@ export class Hotspot3DViewer {
       y: Math.max(0.02, size.y * 0.95),
       z: Math.max(0.02, size.z * 0.95)
     };
-    const maxCylinder = { r: maxSphereR, h: Math.max(0.02, size.y * 0.95) };
+    const maxCylinder = {
+      r: maxSphereR,
+      h: Math.max(0.02, size.y * 0.95)
+    };
 
     this.modelLimits.maxSphereR = maxSphereR;
     this.modelLimits.maxBox = maxBox;
@@ -1691,7 +1904,7 @@ export class Hotspot3DViewer {
   }
 }
 
-/* ===== helpers ===== */
+/* ===== helper ===== */
 function normalizeHex(s) {
   if (!s) return DEFAULT_HOTSPOT_HEX;
   const t = ('' + s).trim();
