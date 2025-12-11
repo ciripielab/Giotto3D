@@ -11,6 +11,8 @@
 // - Opacity: slider 0–1 con etichetta numerica
 // - TransformControls: translate / rotate / scale
 // - Limiti dinamici dalla bounding box del modello
+// - Background: colore + panorama 360 equirectangular
+// - Light intensity: regolabile da API
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -50,6 +52,12 @@ export class Hotspot3DViewer {
     this.renderer = null;
     this.controls = null;
     this.loader = null;
+
+    // luci
+    this.ambientLight = null;
+    this.dirLight = null;
+    this.axesHelper = null;
+    this.lightHelper = null;
 
     // modello
     this.model = null;
@@ -94,6 +102,10 @@ export class Hotspot3DViewer {
     // stato gizmo
     this.gizmoEnabled = false;
     this.gizmoMode = 'translate'; // 'translate' | 'rotate' | 'scale'
+
+    // panorama
+    this.texLoader = new THREE.TextureLoader();
+    this._panoramaTexture = null;
 
     // setup
     this._initScene(background);
@@ -221,7 +233,6 @@ export class Hotspot3DViewer {
     this._emit({ type: 'onModeApplied', payload: { mode: this.currentMode } });
     this._syncAll();
   }
-  
 
   setCreationShape(shape) {
     if (['sphere','box','cylinder'].includes(shape)) this.creationShape = shape;
@@ -238,6 +249,61 @@ export class Hotspot3DViewer {
     } catch (e) {
       console.warn('Hotspot3DViewer.setBackground(): colore non valido', bg, e);
     }
+  }
+
+  /**
+   * Imposta un panorama 360 equirectangular come sfondo.
+   * @param {string} url percorso della texture (es. /images/EiffelTower.jpg)
+   */
+  setPanorama(url) {
+    if (!url) {
+      // rimuovi panorama, eventualmente torna ad un colore di sfondo
+      this.scene.background = new THREE.Color(0x000000);
+      if (this._panoramaTexture) {
+        this._panoramaTexture.dispose();
+        this._panoramaTexture = null;
+      }
+      this._emit({
+        type: 'onBackgroundPanoramaChanged',
+        payload: { url: '' }
+      });
+      return;
+    }
+
+    this.texLoader.load(
+      url,
+      (tex) => {
+        tex.mapping = THREE.EquirectangularReflectionMapping;
+        this._panoramaTexture = tex;
+        this.scene.background = tex;
+        this._emit({
+          type: 'onBackgroundPanoramaChanged',
+          payload: { url }
+        });
+      },
+      undefined,
+      (error) => {
+        console.error('Errore caricamento panorama 360:', error);
+        this._emit({
+          type: 'onBackgroundPanoramaError',
+          payload: { url, message: String(error) }
+        });
+      }
+    );
+  }
+
+  /**
+   * Imposta l'intensità della luce direzionale principale (0..3 tipicamente).
+   */
+  setLightIntensity(value) {
+    const v = Number(value);
+    if (!Number.isFinite(v) || !this.dirLight) return;
+    const clamped = Math.min(Math.max(v, 0), 3);
+    this.dirLight.intensity = clamped;
+    this._emit({
+      type: 'onLightChanged',
+      payload: { intensity: clamped }
+    });
   }
 
   highlightHotspot(id) {
@@ -260,28 +326,31 @@ export class Hotspot3DViewer {
     this.camera.position.set(0, 1.5, 3);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // tone mapping "soft"
+    this.renderer.outputEncoding = THREE.sRGBEncoding;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.8;
+
     this._updateRendererSize();
     this.renderer.domElement.style.width  = '100%';
     this.renderer.domElement.style.height = '100%';
     this.container.appendChild(this.renderer.domElement);
 
-    // luci + helper
-    this.scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+    // luci più morbide
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+    this.scene.add(this.ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2);
-    dirLight.position.set(2, 5, 2);
-    this.scene.add(dirLight);
+    this.dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    this.dirLight.position.set(2, 5, 2);
+    this.scene.add(this.dirLight);
 
-    // Salva i riferimenti agli helper
-    this.lightHelper = new THREE.DirectionalLightHelper(dirLight, 0.3);
+    // helper
+    this.lightHelper = new THREE.DirectionalLightHelper(this.dirLight, 0.3);
     this.axesHelper  = new THREE.AxesHelper(1);
-
     this.scene.add(this.lightHelper);
     this.scene.add(this.axesHelper);
 
-    // imposta visibilità iniziale in base alla modalità corrente
     this._updateHelpersVisibility();
-
 
     this.loader = new GLTFLoader();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -815,19 +884,21 @@ export class Hotspot3DViewer {
     opacityBlock.style.marginTop = '6px';
 
     const opacityLabel = document.createElement('label');
-    opacityLabel.textContent = 'opacity';
     opacityLabel.style.display = 'flex';
     opacityLabel.style.alignItems = 'center';
     opacityLabel.style.justifyContent = 'space-between';
     opacityLabel.style.fontSize = '12px';
     opacityLabel.style.opacity = '.8';
 
+    const opacityText = document.createElement('span');
+    opacityText.textContent = 'opacity';
+
     const opacityValueLabel = document.createElement('span');
     opacityValueLabel.textContent = '1.00';
     opacityValueLabel.style.fontSize = '11px';
     opacityValueLabel.style.opacity = '.7';
 
-    opacityLabel.appendChild(document.createTextNode('opacity'));
+    opacityLabel.appendChild(opacityText);
     opacityLabel.appendChild(opacityValueLabel);
 
     const opacitySlider = document.createElement('input');
@@ -1424,8 +1495,9 @@ export class Hotspot3DViewer {
 
     let dims, rot;
     if (shape === 'sphere') {
-      dims = { r: DEFAULT_SPHERE_R };
+      dims = { DEFAULT_SPHERE_R };
       rot = undefined;
+      dims = { r: DEFAULT_SPHERE_R };
     } else if (shape === 'box') {
       dims = { ...DEFAULT_BOX };
       rot = { ...DEFAULT_BOX_ROT };
@@ -1532,13 +1604,11 @@ export class Hotspot3DViewer {
     }
   }
 
-
   _updateHelpersVisibility() {
     const visible = (this.currentMode === 'edit');
     if (this.axesHelper)  this.axesHelper.visible  = visible;
     if (this.lightHelper) this.lightHelper.visible = visible;
   }
-
 
   _createHotspot(
     id,

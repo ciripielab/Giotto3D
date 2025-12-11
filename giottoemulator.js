@@ -6,6 +6,9 @@ const DEFAULT_MODEL_URL = '/models/plane.glb'; // stessa origine => niente CORS
 const DEFAULT_POV = { X: 0, Y: 1.5, Z: 3 };
 const MAX_MSGS = 50; // ultimo 50 messaggi
 
+// Panorama: nome di default nella cartella /images
+const PANORAMA_DEFAULT_NAME = 'EiffelTower.jpg';
+
 // === Stato condiviso (single instance) ===
 let shared = {
   mode: 'view',
@@ -24,6 +27,15 @@ const $btnBgApply = document.getElementById('btn-bg-apply');
 const $btnReset = document.getElementById('btn-reset');
 const $msgBox = document.getElementById('msgBox');
 
+// nuovi riferimenti per panorama
+const $panoramaName   = document.getElementById('panoramaName');
+const $btnPanorama    = document.getElementById('btn-panorama');
+const $panoramaPreset = document.getElementById('panoramaPreset');
+
+// nuovi riferimenti per light intensity
+const $lightIntensity       = document.getElementById('lightIntensity');
+const $lightIntensityLabel  = document.getElementById('lightIntensityLabel');
+
 function now() { return new Date().toLocaleTimeString(); }
 function render(note='') {
   $state.textContent = JSON.stringify(shared, null, 2);
@@ -33,7 +45,6 @@ function render(note='') {
 
 // Area messaggi (separata)
 function pushMessage(text) {
-  // crea riga
   const wrapper = document.createElement('div');
   wrapper.className = 'item';
   const ts = document.createElement('span');
@@ -47,16 +58,60 @@ function pushMessage(text) {
   wrapper.appendChild(tx);
   $msgBox.appendChild(wrapper);
 
-  // trim storia
   const items = $msgBox.querySelectorAll('.item');
   if (items.length > MAX_MSGS) {
     $msgBox.removeChild(items[0]);
   }
-  // scroll in fondo
   $msgBox.scrollTop = $msgBox.scrollHeight;
 }
 
-// === Viewer singolo ===
+/* ===== carica la lista di panorami da images/panoramas.json ===== */
+async function loadPanoramaList() {
+  if (!$panoramaPreset) return;
+
+  try {
+    const res = await fetch('/images/panoramas.json');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const list = await res.json();
+    if (!Array.isArray(list)) throw new Error('JSON non è un array');
+
+    // cancella eventuali voci (tranne il placeholder)
+    $panoramaPreset.innerHTML = '';
+    const optEmpty = document.createElement('option');
+    optEmpty.value = '';
+    optEmpty.textContent = '-- scegli --';
+    $panoramaPreset.appendChild(optEmpty);
+
+    // aggiungi le opzioni dalla lista
+    for (const name of list) {
+      if (typeof name !== 'string' || !name.trim()) continue;
+      const opt = document.createElement('option');
+      opt.value = name.trim();
+      opt.textContent = name.trim();
+      $panoramaPreset.appendChild(opt);
+    }
+
+    pushMessage('Lista panorami caricata da panoramas.json');
+  } catch (err) {
+    console.warn('Impossibile caricare /images/panoramas.json', err);
+
+    const hasOnlyPlaceholder = $panoramaPreset.options.length <= 1;
+    if (hasOnlyPlaceholder) {
+      const opt = document.createElement('option');
+      opt.value = PANORAMA_DEFAULT_NAME;
+      opt.textContent = PANORAMA_DEFAULT_NAME + ' (default)';
+      $panoramaPreset.appendChild(opt);
+    }
+
+    pushMessage('Errore nel caricamento della lista panorami; uso fallback');
+  }
+}
+
+// chiamiamo subito il caricamento della lista
+loadPanoramaList();
+
+/* ===== Viewer singolo ===== */
 const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
   onEvent: ({ type, payload }) => {
     // Messaggi di selezione SOLO in View Mode
@@ -76,7 +131,6 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       return;
     }
 
-    // Altri eventi con aggiornamento stato ma senza messaggi "rumorosi"
     if (type === 'onHotspotAdded' && payload) {
       if (!shared.hotspots.find(h => h.Id === payload.Id)) shared.hotspots.push(payload);
       render('onHotspotAdded');
@@ -97,6 +151,7 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
         if (payload.dims)  hs.dims  = payload.dims;
         if (payload.rot)   hs.rot   = payload.rot;
         if (payload.color) hs.color = payload.color;
+        if (payload.opacity !== undefined) hs.opacity = payload.opacity;
       }
       render('onHotspotUpdated');
       return;
@@ -104,7 +159,6 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
 
     if (type === 'onPointOfViewChanged' && payload) {
       shared.pointOfView = { ...shared.pointOfView, ...payload };
-      // nessun messaggio
       return;
     }
 
@@ -124,18 +178,40 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
 
     if (type === 'onBackgroundChanged') {
       render(`background #${payload?.color ?? ''}`);
-      // messaggio opzionale
       return;
     }
 
-    // fallback silenzioso
-    // render(type);
+    if (type === 'onBackgroundPanoramaChanged') {
+      render(`panorama 360: ${payload?.url ?? ''}`);
+      pushMessage(`Panorama 360 impostato: ${payload?.url ?? ''}`);
+      return;
+    }
+
+    if (type === 'onBackgroundPanoramaError') {
+      console.warn('[Panorama load error]:', payload);
+      pushMessage('Errore caricamento panorama 360');
+      return;
+    }
+
+    if (type === 'onLightChanged') {
+      render(`lightIntensity=${payload?.intensity ?? 'n/a'}`);
+      return;
+    }
   }
 });
 
 // init default (carica modello e stato base)
 viewer.init(shared);
 pushMessage('Pronto');
+
+// applica lightIntensity iniziale
+if ($lightIntensity) {
+  const initVal = parseFloat($lightIntensity.value);
+  if (Number.isFinite(initVal)) {
+    viewer.setLightIntensity(initVal);
+    if ($lightIntensityLabel) $lightIntensityLabel.textContent = initVal.toFixed(2);
+  }
+}
 
 // === Azioni UI ===
 
@@ -198,7 +274,7 @@ document.getElementById('btn-sync').addEventListener('click', () => {
 });
 
 $shape.addEventListener('change', () => {
-  const shape = $shape.value; // 'sphere' | 'box'
+  const shape = $shape.value; // 'sphere' | 'box' | 'cylinder'
   viewer.setCreationShape(shape);
   render(`setCreationShape(${shape})`);
   pushMessage(`Shape per nuovi hotspot: ${shape}`);
@@ -213,6 +289,33 @@ $btnBgApply?.addEventListener('click', () => {
   viewer.setBackground($bgColor.value);
   render('setBackground (apply)');
   pushMessage('Background aggiornato');
+});
+
+// Select panorami: aggiorna il campo testo
+$panoramaPreset?.addEventListener('change', () => {
+  const v = $panoramaPreset.value;
+  if (v && $panoramaName) {
+    $panoramaName.value = v;
+  }
+});
+
+// Panorama 360 dalla cartella /images
+$btnPanorama?.addEventListener('click', () => {
+  const raw = ($panoramaName?.value || '').trim();
+  const fileName = raw || PANORAMA_DEFAULT_NAME;
+  const url = `/images/${fileName}`;
+
+  viewer.setPanorama(url);
+  render(`setPanorama(360: ${fileName})`);
+  pushMessage(`Richiesto panorama 360: ${url}`);
+});
+
+// Light intensity slider -> viewer.setLightIntensity
+$lightIntensity?.addEventListener('input', () => {
+  const v = parseFloat($lightIntensity.value);
+  if (!Number.isFinite(v)) return;
+  viewer.setLightIntensity(v);
+  if ($lightIntensityLabel) $lightIntensityLabel.textContent = v.toFixed(2);
 });
 
 // Reset (mantiene il modello corrente)
@@ -295,6 +398,12 @@ function validateSharedData(data) {
       if (typeof h.color !== 'string') return err(`hotspot ${h.Id}: color deve essere stringa`);
       const hex = h.color.replace('#', '');
       if (!/^[0-9a-fA-F]{6}$/.test(hex)) return err(`hotspot ${h.Id}: color non valido (usa #rrggbb)`);
+    }
+
+    if (h.opacity !== undefined) {
+      if (typeof h.opacity !== 'number' || h.opacity < 0 || h.opacity > 1) {
+        return err(`hotspot ${h.Id}: opacity deve essere numero tra 0 e 1`);
+      }
     }
   }
   return ok();
