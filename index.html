@@ -56,11 +56,20 @@
     #panel h2 { margin: 0; font-size: 1rem; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
-    button, select, input[type="color"] {
+    button, select, input[type="color"], input[type="text"] {
       font: inherit; padding: .45rem .65rem; border-radius: .5rem; cursor: pointer;
       border: 1px solid #00000030; background: #f6f6f6;
     }
+    input[type="text"] {
+      cursor: text;
+      background: #fff;
+    }
     button:hover { background: #eee; }
+
+    input[type="range"] {
+      cursor: pointer;
+      background: transparent;
+    }
 
     .badge {
       padding: .15rem .4rem; border-radius: .5rem;
@@ -131,10 +140,39 @@
 
       <div class="row">
         <label class="inline">Background:
-          <input type="color" id="bgColor" value="#f0f0f0" />
+          <input type="color" id="bgColor" value="#ffffff" />
         </label>
         <button id="btn-bg-apply">Applica</button>
         <small>(non salvato nello shared JSON)</small>
+      </div>
+
+      <!-- RIGA PANORAMA 360 DINAMICO + SELECT -->
+      <div class="row">
+        <label class="inline">Panorama 360 (images/):
+          <select id="panoramaPreset">
+            <option value="">-- scegli --</option>
+            <!-- riempito da giottoemulator.js leggendo panoramas.json -->
+          </select>
+          <input type="text"
+                 id="panoramaName"
+                 placeholder="EiffelTower.jpg"
+                 style="min-width: 150px;" />
+        </label>
+        <button id="btn-panorama">Set panorama 360</button>
+        <small>File presenti in /images (da panoramas.json)</small>
+      </div>
+
+      <!-- NUOVA RIGA: LIGHT INTENSITY -->
+      <div class="row">
+        <label class="inline">Light intensity:
+          <input type="range"
+                 id="lightIntensity"
+                 min="0"
+                 max="2"
+                 step="0.05"
+                 value="0.8" />
+        </label>
+        <small id="lightIntensityLabel">0.80</small>
       </div>
 
       <div class="row">
@@ -155,7 +193,6 @@
       <div id="msgBox"></div>
     </div>
   </section>
-
 
   <script type="module" src="./giottoemulator.js"></script>
 </body>
