@@ -14,6 +14,9 @@ let shared = {
   mode: 'view',
   model3D: DEFAULT_MODEL_URL,
   pointOfView: { ...DEFAULT_POV },
+  background: 'color',
+  backgroundcolor: '#ffffff',
+  panoimage: null,
   hotspots: []
 };
 
@@ -126,7 +129,15 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
 
     // SYNC_DATA: aggiorna shared ma non tocca l'area messaggi
     if (type === 'SYNC_DATA' && payload) {
-      shared = payload;
+      shared = {
+        mode: payload.mode,
+        model3D: payload.model3D,
+        pointOfView: payload.pointOfView,
+        background: payload.background ?? shared.background ?? 'color',
+        backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor ?? '#ffffff',
+        panoimage: payload.panoimage ?? shared.panoimage ?? null,
+        hotspots: payload.hotspots ?? []
+      };
       render('SYNC_DATA');
       return;
     }
@@ -240,6 +251,9 @@ document.getElementById('btn-load').addEventListener('click', () => {
     mode: 'view',
     model3D: url,
     pointOfView: { ...DEFAULT_POV },
+    background: 'color',
+    backgroundcolor: '#ffffff',
+    panoimage: null,
     hotspots: []
   };
   viewer.init(shared);
@@ -280,13 +294,16 @@ $shape.addEventListener('change', () => {
   pushMessage(`Shape per nuovi hotspot: ${shape}`);
 });
 
-// Background (non salvato nello shared)
+// Background (salvato nello shared solo su Applica)
 $bgColor.addEventListener('input', () => {
   viewer.setBackground($bgColor.value);
   render('setBackground (live)');
 });
 $btnBgApply?.addEventListener('click', () => {
   viewer.setBackground($bgColor.value);
+  shared.background = 'color';
+  shared.backgroundcolor = $bgColor.value;
+  shared.panoimage = null;
   render('setBackground (apply)');
   pushMessage('Background aggiornato');
 });
@@ -306,6 +323,9 @@ $btnPanorama?.addEventListener('click', () => {
   const url = `/images/${fileName}`;
 
   viewer.setPanorama(url);
+  shared.background = 'pano';
+  shared.panoimage = url;
+  shared.backgroundcolor = null;
   render(`setPanorama(360: ${fileName})`);
   pushMessage(`Richiesto panorama 360: ${url}`);
 });
@@ -325,6 +345,9 @@ function resetState({ preserveModel = true } = {}) {
     mode: 'view',
     model3D: modelUrl,
     pointOfView: { ...DEFAULT_POV },
+    background: 'color',
+    backgroundcolor: '#ffffff',
+    panoimage: null,
     hotspots: []
   };
   viewer.init(shared);
@@ -358,6 +381,14 @@ function validateSharedData(data) {
 
   const pov = data.pointOfView;
   if (!pov || !isNum(pov.X) || !isNum(pov.Y) || !isNum(pov.Z)) return err('pointOfView deve avere X,Y,Z numerici');
+
+  if (!['color', 'pano'].includes(data.background)) return err('background non valido (usa color o pano)');
+  if (data.backgroundcolor !== null && data.backgroundcolor !== undefined && typeof data.backgroundcolor !== 'string') {
+    return err('backgroundcolor deve essere stringa o null');
+  }
+  if (data.panoimage !== null && data.panoimage !== undefined && typeof data.panoimage !== 'string') {
+    return err('panoimage deve essere stringa o null');
+  }
 
   if (!Array.isArray(data.hotspots)) return err('hotspots deve essere array');
 
@@ -420,6 +451,21 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     if (!valid) { alert('Import fallito: ' + error); return; }
     shared = data;
     viewer.init(shared);
+    if (shared.background === 'color' && shared.backgroundcolor) {
+      viewer.setBackground(shared.backgroundcolor);
+      if ($bgColor) $bgColor.value = shared.backgroundcolor;
+    } else if (shared.background === 'pano' && shared.panoimage) {
+      viewer.setPanorama(shared.panoimage);
+      if ($panoramaName) {
+        const fileName = shared.panoimage.split('/').pop();
+        $panoramaName.value = fileName || shared.panoimage;
+      }
+      if ($panoramaPreset) {
+        const fileName = shared.panoimage.split('/').pop();
+        const match = Array.from($panoramaPreset.options).find((opt) => opt.value === fileName);
+        $panoramaPreset.value = match ? fileName : '';
+      }
+    }
     render('imported');
     pushMessage('JSON importato');
   } catch (err) {
