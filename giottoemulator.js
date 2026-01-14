@@ -114,9 +114,9 @@ loadPanoramaList();
 /* ===== Viewer singolo ===== */
 const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
   onEvent: ({ type, payload }) => {
-    // Messaggi di selezione SOLO in View Mode
+    // Messaggi di selezione in View/Edit Mode
     if (type === 'onHotspotSelected') {
-      if (shared.mode === 'view') {
+      if (shared.mode === 'view' || shared.mode === 'edit') {
         const id = payload?.Id;
         if (id) pushMessage(`Hotspot selezionato: ${id}`);
         else    pushMessage('Nessun hotspot selezionato');
