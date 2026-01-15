@@ -193,6 +193,7 @@ export class Hotspot3DViewer {
     if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
     else this._selectHotspot(null, { notify: false });
 
+    this._updateHotspotVisibility();
     this._syncAll();
   }
 
@@ -229,6 +230,7 @@ export class Hotspot3DViewer {
 
     this._updateTransformControls();
     this._updateHelpersVisibility();
+    this._updateHotspotVisibility();
 
     this._emit({ type: 'onModeApplied', payload: { mode: this.currentMode } });
     this._syncAll();
@@ -1608,6 +1610,26 @@ export class Hotspot3DViewer {
     const visible = (this.currentMode === 'edit');
     if (this.axesHelper)  this.axesHelper.visible  = visible;
     if (this.lightHelper) this.lightHelper.visible = visible;
+  }
+
+  _updateHotspotVisibility() {
+    const isHidden = (this.currentMode === 'hide');
+    Object.values(this.hotspots).forEach((mesh) => {
+      const baseOpacity = Number.isFinite(mesh.userData?.opacity)
+        ? mesh.userData.opacity
+        : (Number.isFinite(mesh.material?.opacity) ? mesh.material.opacity : 1);
+      if (isHidden) {
+        mesh.material.transparent = true;
+        mesh.material.opacity = 0;
+        mesh.material.colorWrite = false;
+      } else {
+        const o = Math.min(Math.max(baseOpacity, 0), 1);
+        mesh.material.opacity = o;
+        mesh.material.transparent = o < 1;
+        mesh.material.colorWrite = true;
+      }
+      mesh.material.needsUpdate = true;
+    });
   }
 
   _createHotspot(

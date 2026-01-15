@@ -117,9 +117,9 @@ loadPanoramaList();
 /* ===== Viewer singolo ===== */
 const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
   onEvent: ({ type, payload }) => {
-    // Messaggi di selezione in View/Edit Mode
+    // Messaggi di selezione in View/Edit/Hide Mode
     if (type === 'onHotspotSelected') {
-      if (shared.mode === 'view' || shared.mode === 'edit') {
+      if (shared.mode === 'view' || shared.mode === 'edit' || shared.mode === 'hide') {
         const id = payload?.Id;
         if (id) pushMessage(`Hotspot selezionato: ${id}`);
         else    pushMessage('Nessun hotspot selezionato');
@@ -279,6 +279,13 @@ document.getElementById('btn-edit').addEventListener('click', () => {
   viewer.setMode('edit');
   render('setMode(edit)');
   pushMessage('Modalità: edit');
+});
+
+document.getElementById('btn-hide').addEventListener('click', () => {
+  shared.mode = 'hide';
+  viewer.setMode('hide');
+  render('setMode(hide)');
+  pushMessage('ModalitÇÿ: hide');
 });
 
 document.getElementById('btn-sync').addEventListener('click', () => {
