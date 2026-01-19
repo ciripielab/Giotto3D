@@ -31,16 +31,16 @@ const $btnReset = document.getElementById('btn-reset');
 const $msgBox = document.getElementById('msgBox');
 
 // nuovi riferimenti per panorama
-const $panoramaName   = document.getElementById('panoramaName');
-const $btnPanorama    = document.getElementById('btn-panorama');
+const $panoramaName = document.getElementById('panoramaName');
+const $btnPanorama = document.getElementById('btn-panorama');
 const $panoramaPreset = document.getElementById('panoramaPreset');
 
 // nuovi riferimenti per light intensity
-const $lightIntensity       = document.getElementById('lightIntensity');
-const $lightIntensityLabel  = document.getElementById('lightIntensityLabel');
+const $lightIntensity = document.getElementById('lightIntensity');
+const $lightIntensityLabel = document.getElementById('lightIntensityLabel');
 
 function now() { return new Date().toLocaleTimeString(); }
-function render(note='') {
+function render(note = '') {
   $state.textContent = JSON.stringify(shared, null, 2);
   $modeBadge.textContent = `mode: ${shared.mode}`;
   $meta.textContent = `${now()} — ${note}`;
@@ -122,7 +122,7 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       if (shared.mode === 'view' || shared.mode === 'edit') {
         const id = payload?.Id;
         if (id) pushMessage(`Hotspot selezionato: ${id}`);
-        else    pushMessage('Nessun hotspot selezionato');
+        else pushMessage('Nessun hotspot selezionato');
       }
       return;
     }
@@ -130,13 +130,13 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
     // SYNC_DATA: aggiorna shared ma non tocca l'area messaggi
     if (type === 'SYNC_DATA' && payload) {
       shared = {
-        mode: payload.mode,
-        model3D: payload.model3D,
-        pointOfView: payload.pointOfView,
-        background: payload.background ?? shared.background ?? 'color',
-        backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor ?? '#ffffff',
-        panoimage: payload.panoimage ?? shared.panoimage ?? null,
-        hotspots: payload.hotspots ?? []
+        mode: payload.mode ?? shared.mode,
+        model3D: payload.model3D ?? shared.model3D,
+        pointOfView: payload.pointOfView ?? shared.pointOfView,
+        background: payload.background ?? shared.background,
+        backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor,
+        panoimage: payload.panoimage ?? shared.panoimage,
+        hotspots: payload.hotspots ?? shared.hotspots
       };
       render('SYNC_DATA');
       return;
@@ -159,8 +159,8 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       if (hs) {
         hs.X = payload.X; hs.Y = payload.Y; hs.Z = payload.Z;
         if (payload.shape) hs.shape = payload.shape;
-        if (payload.dims)  hs.dims  = payload.dims;
-        if (payload.rot)   hs.rot   = payload.rot;
+        if (payload.dims) hs.dims = payload.dims;
+        if (payload.rot) hs.rot = payload.rot;
         if (payload.color) hs.color = payload.color;
         if (payload.opacity !== undefined) hs.opacity = payload.opacity;
       }
@@ -245,7 +245,7 @@ document.getElementById('btn-load').addEventListener('click', () => {
     if (u.origin !== window.location.origin) {
       alert('Attenzione: URL di origine diversa. Potresti avere errori CORS se il server non consente l’accesso.');
     }
-  } catch {}
+  } catch { }
 
   shared = {
     mode: 'view',
@@ -320,7 +320,7 @@ $panoramaPreset?.addEventListener('change', () => {
 $btnPanorama?.addEventListener('click', () => {
   const raw = ($panoramaName?.value || '').trim();
   const fileName = raw || PANORAMA_DEFAULT_NAME;
-  const url = `/images/${fileName}`;
+  const url = `./images/${fileName}`;
 
   viewer.setPanorama(url);
   shared.background = 'pano';
@@ -368,75 +368,92 @@ function downloadJSON() {
 }
 document.getElementById('btn-download').addEventListener('click', downloadJSON);
 
-
+// ELS: modifiche per rendere opzionali tutte le proprietà del json
+// obiettivo -> poter inviare al viewer un json con le sole proprietà da modificare
+// il validatore dovrà validare solo le proprietà presenti
 function validateSharedData(data) {
   const err = (msg) => ({ valid: false, error: msg });
-  const ok  = () => ({ valid: true });
+  const ok = () => ({ valid: true });
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-  if (typeof data !== 'object' || data === null) return err('root non è oggetto');
+  // ELS: validazione oggetto, non cambia nulla
+  if (typeof data !== 'object' || data == null) return err('root non è oggetto');
 
-  if (!['view', 'edit', 'hide'].includes(data.mode)) return err('mode non valido');
-  if (typeof data.model3D !== 'string') return err('model3D deve essere stringa');
+  // ELS: se esiste mode lo valida
+  if (data.mode != null && !['view', 'edit', 'hide'].includes(data.mode)) return err('mode non valido');
+
+  // ELS: se esiste model3D lo valida
+  if (data.model3D && typeof data.model3D !== 'string') return err('model3D deve essere stringa');
 
   const pov = data.pointOfView;
-  if (!pov || !isNum(pov.X) || !isNum(pov.Y) || !isNum(pov.Z)) return err('pointOfView deve avere X,Y,Z numerici');
+  // ELS: se esiste pointOfView lo valida
+  if (pov != null && (!isNum(pov.X) || !isNum(pov.Y) || !isNum(pov.Z))) return err('pointOfView deve avere X,Y,Z numerici');
 
-  if (!['color', 'pano'].includes(data.background)) return err('background non valido (usa color o pano)');
-  if (data.backgroundcolor !== null && data.backgroundcolor !== undefined && typeof data.backgroundcolor !== 'string') {
+  // ELS: se esiste background lo valida
+  if (data.background != null && !['color', 'pano'].includes(data.background)) return err('background non valido (usa color o pano)');
+
+  // ELS: cambiando !== con != possiamo fare un unico check su null, comprendendo anche il caso undefined
+  if (data.backgroundcolor != null && typeof data.backgroundcolor !== 'string') {
     return err('backgroundcolor deve essere stringa o null');
   }
-  if (data.panoimage !== null && data.panoimage !== undefined && typeof data.panoimage !== 'string') {
+
+  // ELS: cambiando !== con != possiamo fare un unico check su null, comprendendo anche il caso undefined
+  if (data.panoimage != null && typeof data.panoimage !== 'string') {
     return err('panoimage deve essere stringa o null');
   }
 
-  if (!Array.isArray(data.hotspots)) return err('hotspots deve essere array');
+  // ELS: Check degli hotspots solo se il json contiene la proprietà
+  // aggiungo un if che blocca tutto se non esiste la proprietà hotspots
+  if (data.hotspots != null) {
+    if (!Array.isArray(data.hotspots)) return err('hotspots deve essere array');
 
-  for (const h of data.hotspots) {
-    if (typeof h !== 'object' || h === null) return err('hotspot non è oggetto');
-    if (typeof h.Id !== 'string' || !h.Id) return err('hotspot.Id mancante o non valido');
-    if (!isNum(h.X) || !isNum(h.Y) || !isNum(h.Z)) return err(`hotspot ${h.Id}: coordinate X/Y/Z non valide`);
+    for (const h of data.hotspots) {
+      if (typeof h !== 'object' || h === null) return err('hotspot non è oggetto');
+      if (typeof h.Id !== 'string' || !h.Id) return err('hotspot.Id mancante o non valido');
+      if (!isNum(h.X) || !isNum(h.Y) || !isNum(h.Z)) return err(`hotspot ${h.Id}: coordinate X/Y/Z non valide`);
 
-    const shape = h.shape ?? 'sphere';
-    if (!['sphere', 'box', 'cylinder'].includes(shape)) return err(`hotspot ${h.Id}: shape non valida`);
+      const shape = h.shape ?? 'sphere';
+      if (!['sphere', 'box', 'cylinder'].includes(shape)) return err(`hotspot ${h.Id}: shape non valida`);
 
-    if (shape === 'sphere') {
-      const r = h.dims?.r;
-      if (!isNum(r) || r <= 0) return err(`hotspot ${h.Id}: dims.r non valido (> 0)`);
-    } else if (shape === 'box') {
-      const { x, y, z } = h.dims || {};
-      if (![x, y, z].every(isNum) || x <= 0 || y <= 0 || z <= 0) {
-        return err(`hotspot ${h.Id}: dims.x/y/z non validi (> 0)`);
+      if (shape === 'sphere') {
+        const r = h.dims?.r;
+        if (!isNum(r) || r <= 0) return err(`hotspot ${h.Id}: dims.r non valido (> 0)`);
+      } else if (shape === 'box') {
+        const { x, y, z } = h.dims || {};
+        if (![x, y, z].every(isNum) || x <= 0 || y <= 0 || z <= 0) {
+          return err(`hotspot ${h.Id}: dims.x/y/z non validi (> 0)`);
+        }
+        if (h.rot !== undefined) {
+          const { x: rx, y: ry, z: rz } = h.rot || {};
+          const inRange = (a) => isNum(a) && a >= -360 && a <= 360;
+          if (![rx, ry, rz].every(inRange)) return err(`hotspot ${h.Id}: rot.x/y/z non validi (gradi -360..360)`);
+        }
+      } else { // cylinder
+        const { r, h: hh } = h.dims || {};
+        if (!isNum(r) || r <= 0 || !isNum(hh) || hh <= 0) {
+          return err(`hotspot ${h.Id}: dims.r/h non validi (> 0)`);
+        }
+        if (h.rot !== undefined) {
+          const { x: rx, y: ry, z: rz } = h.rot || {};
+          const inRange = (a) => isNum(a) && a >= -360 && a <= 360;
+          if (![rx, ry, rz].every(inRange)) return err(`hotspot ${h.Id}: rot.x/y/z non validi (gradi -360..360)`);
+        }
       }
-      if (h.rot !== undefined) {
-        const { x: rx, y: ry, z: rz } = h.rot || {};
-        const inRange = (a) => isNum(a) && a >= -360 && a <= 360;
-        if (![rx, ry, rz].every(inRange)) return err(`hotspot ${h.Id}: rot.x/y/z non validi (gradi -360..360)`);
-      }
-    } else { // cylinder
-      const { r, h: hh } = h.dims || {};
-      if (!isNum(r) || r <= 0 || !isNum(hh) || hh <= 0) {
-        return err(`hotspot ${h.Id}: dims.r/h non validi (> 0)`);
-      }
-      if (h.rot !== undefined) {
-        const { x: rx, y: ry, z: rz } = h.rot || {};
-        const inRange = (a) => isNum(a) && a >= -360 && a <= 360;
-        if (![rx, ry, rz].every(inRange)) return err(`hotspot ${h.Id}: rot.x/y/z non validi (gradi -360..360)`);
-      }
-    }
 
-    if (h.color !== undefined) {
-      if (typeof h.color !== 'string') return err(`hotspot ${h.Id}: color deve essere stringa`);
-      const hex = h.color.replace('#', '');
-      if (!/^[0-9a-fA-F]{6}$/.test(hex)) return err(`hotspot ${h.Id}: color non valido (usa #rrggbb)`);
-    }
+      if (h.color !== undefined) {
+        if (typeof h.color !== 'string') return err(`hotspot ${h.Id}: color deve essere stringa`);
+        const hex = h.color.replace('#', '');
+        if (!/^[0-9a-fA-F]{6}$/.test(hex)) return err(`hotspot ${h.Id}: color non valido (usa #rrggbb)`);
+      }
 
-    if (h.opacity !== undefined) {
-      if (typeof h.opacity !== 'number' || h.opacity < 0 || h.opacity > 1) {
-        return err(`hotspot ${h.Id}: opacity deve essere numero tra 0 e 1`);
+      if (h.opacity !== undefined) {
+        if (typeof h.opacity !== 'number' || h.opacity < 0 || h.opacity > 1) {
+          return err(`hotspot ${h.Id}: opacity deve essere numero tra 0 e 1`);
+        }
       }
     }
   }
+
   return ok();
 }
 
@@ -449,8 +466,24 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     const data = JSON.parse(text);
     const { valid, error } = validateSharedData(data);
     if (!valid) { alert('Import fallito: ' + error); return; }
-    shared = data;
+
+    // ELS: per gestire upload di json parziali mantenendo le proprietà già caricate facciamo update di 
+    // shared definendo le singole proprietà (operazione che si potrebbe fattorizzare facilmente con una utility)
+    //shared = data;
+    shared = {
+      mode: data.mode ?? shared.mode,
+      model3D: data.model3D ?? shared.model3D,
+      pointOfView: data.pointOfView ?? shared.pointOfView,
+      background: data.background ?? shared.background,
+      backgroundcolor: data.backgroundcolor ?? shared.backgroundcolor,
+      panoimage: data.panoimage ?? shared.panoimage,
+      hotspots: data.hotspots ?? shared.hotspots
+    };
+
     viewer.init(shared);
+
+    // ELS: Valutare se sia più pulito impostare anche bg e panoImage in init del viewer,
+    // il controllo sulle proprietà esiste già, sono di fatto opzionali
     if (shared.background === 'color' && shared.backgroundcolor) {
       viewer.setBackground(shared.backgroundcolor);
       if ($bgColor) $bgColor.value = shared.backgroundcolor;

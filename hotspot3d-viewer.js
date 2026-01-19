@@ -19,32 +19,32 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-const HOTSPOT_SELECTED_COLOR  = 0xffa500;
+const HOTSPOT_SELECTED_COLOR = 0xffa500;
 const HOTSPOT_HIGHLIGHT_COLOR = 0xff0000;
 
 const DEFAULT_SPHERE_R = 0.05;
-const DEFAULT_BOX      = { x: 0.08, y: 0.08, z: 0.08 };
-const DEFAULT_CYL      = { r: 0.06, h: 0.12 };
-const DEFAULT_BOX_ROT  = { x: 0, y: 0, z: 0 }; // gradi
-const DEFAULT_CYL_ROT  = { x: 0, y: 0, z: 0 }; // gradi
+const DEFAULT_BOX = { x: 0.08, y: 0.08, z: 0.08 };
+const DEFAULT_CYL = { r: 0.06, h: 0.12 };
+const DEFAULT_BOX_ROT = { x: 0, y: 0, z: 0 }; // gradi
+const DEFAULT_CYL_ROT = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_HOTSPOT_HEX = '#00ff00';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
 const POSITION_STEP = 0.01;
-const ROT_STEP      = 1;    // gradi per click rot
-const SCALE_STEP    = 0.01; // step per scale / raggio
+const ROT_STEP = 1;    // gradi per click rot
+const SCALE_STEP = 0.01; // step per scale / raggio
 
 export class Hotspot3DViewer {
   /**
    * @param {HTMLElement} container
    * @param {{ modelUrl?: string, onEvent?: (msg:{type:string,payload?:any})=>void, background?: number|string }} options
    */
-  constructor(container, { modelUrl = '', onEvent = () => {}, background = 0xf0f0f0 } = {}) {
+  constructor(container, { modelUrl = '', onEvent = () => { }, background = 0xf0f0f0 } = {}) {
     if (!container) throw new Error('Hotspot3DViewer: container mancante');
     this.container = container;
-    this.onEvent = (msg) => { try { onEvent?.(msg); } catch {} };
+    this.onEvent = (msg) => { try { onEvent?.(msg); } catch { } };
 
     // 3D base
     this.scene = null;
@@ -87,9 +87,9 @@ export class Hotspot3DViewer {
     };
     this.modelBounds = {
       min: new THREE.Vector3(-1, -1, -1),
-      max: new THREE.Vector3( 1,  1,  1),
-      center: new THREE.Vector3(0,0,0),
-      size: new THREE.Vector3(2,2,2)
+      max: new THREE.Vector3(1, 1, 1),
+      center: new THREE.Vector3(0, 0, 0),
+      size: new THREE.Vector3(2, 2, 2)
     };
 
     // UI refs
@@ -97,7 +97,7 @@ export class Hotspot3DViewer {
 
     // TransformControls
     this.transformControls = null;
-    this.transformHelper   = null;
+    this.transformHelper = null;
 
     // stato gizmo
     this.gizmoEnabled = false;
@@ -120,19 +120,25 @@ export class Hotspot3DViewer {
 
   init(sharedData) {
     const { mode, model3D, pointOfView, hotspots = [] } = sharedData || {};
-    this.setMode(mode);
-
-    // modello
-    if (typeof model3D === 'string') {
-      if (model3D) {
-        if (model3D !== this.currentModelUrl) this.loadModel(model3D);
-      } else {
-        this.pendingModelUrl = '';
-        this.currentModelUrl = '';
-        this._removeModel();
-      }
+    // ELS: se non esiste mode non facciamo niente
+    if (mode != null) {
+      this.setMode(mode);
     }
-    this._recomputeLimitsFromModel();
+
+    // ELS: se non esiste model3D non facciamo niente
+    if (model3D != null) {
+      // modello
+      if (typeof model3D === 'string') {
+        if (model3D) {
+          if (model3D !== this.currentModelUrl) this.loadModel(model3D);
+        } else {
+          this.pendingModelUrl = '';
+          this.currentModelUrl = '';
+          this._removeModel();
+        }
+      }
+      this._recomputeLimitsFromModel();
+    }
 
     // POV
     if (pointOfView) {
@@ -144,52 +150,57 @@ export class Hotspot3DViewer {
       });
     }
 
-    // Hotspot
-    this._clearHotspots();
-    for (const h of hotspots) {
-      const shape = ['sphere','box','cylinder'].includes(h.shape) ? h.shape : 'sphere';
+    // ELS: se non esiste hotspots non facciamo niente
+    if (hotspots != null) {
+      // Hotspot
+      this._clearHotspots();
+      for (const h of hotspots) {
+        const shape = ['sphere', 'box', 'cylinder'].includes(h.shape) ? h.shape : 'sphere';
 
-      let dims;
-      if (shape === 'sphere') {
-        dims = { r: (h.dims?.r ?? DEFAULT_SPHERE_R) };
-      } else if (shape === 'box') {
-        dims = {
-          x: (h.dims?.x ?? DEFAULT_BOX.x),
-          y: (h.dims?.y ?? DEFAULT_BOX.y),
-          z: (h.dims?.z ?? DEFAULT_BOX.z)
-        };
-      } else {
-        dims = {
-          r: (h.dims?.r ?? DEFAULT_CYL.r),
-          h: (h.dims?.h ?? DEFAULT_CYL.h)
-        };
+        let dims;
+        if (shape === 'sphere') {
+          dims = { r: (h.dims?.r ?? DEFAULT_SPHERE_R) };
+        } else if (shape === 'box') {
+          dims = {
+            x: (h.dims?.x ?? DEFAULT_BOX.x),
+            y: (h.dims?.y ?? DEFAULT_BOX.y),
+            z: (h.dims?.z ?? DEFAULT_BOX.z)
+          };
+        } else {
+          dims = {
+            r: (h.dims?.r ?? DEFAULT_CYL.r),
+            h: (h.dims?.h ?? DEFAULT_CYL.h)
+          };
+        }
+        dims = this._clampDimsToLimits(shape, dims);
+
+        const num = (v, dflt) => Number.isFinite(v) ? v : dflt;
+
+        const rot = (shape === 'box')
+          ? { x: num(h.rot?.x, DEFAULT_BOX_ROT.x), y: num(h.rot?.y, DEFAULT_BOX_ROT.y), z: num(h.rot?.z, DEFAULT_BOX_ROT.z) }
+          : (shape === 'cylinder')
+            ? { x: num(h.rot?.x, DEFAULT_CYL_ROT.x), y: num(h.rot?.y, DEFAULT_CYL_ROT.y), z: num(h.rot?.z, DEFAULT_CYL_ROT.z) }
+            : undefined;
+
+        const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
+        const opacity = Number.isFinite(h.opacity) ? Math.min(Math.max(h.opacity, 0), 1) : 1;
+
+        const mesh = this._createHotspot(
+          h.Id,
+          { x: h.X, y: h.Y, z: h.Z },
+          shape,
+          dims,
+          rot,
+          colorHex,
+          opacity
+        );
+        this.scene.add(mesh);
+        this.hotspots[h.Id] = mesh;
       }
-      dims = this._clampDimsToLimits(shape, dims);
-
-      const num = (v, dflt) => Number.isFinite(v) ? v : dflt;
-
-      const rot = (shape === 'box')
-        ? { x: num(h.rot?.x, DEFAULT_BOX_ROT.x), y: num(h.rot?.y, DEFAULT_BOX_ROT.y), z: num(h.rot?.z, DEFAULT_BOX_ROT.z) }
-        : (shape === 'cylinder')
-        ? { x: num(h.rot?.x, DEFAULT_CYL_ROT.x), y: num(h.rot?.y, DEFAULT_CYL_ROT.y), z: num(h.rot?.z, DEFAULT_CYL_ROT.z) }
-        : undefined;
-
-      const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
-      const opacity  = Number.isFinite(h.opacity) ? Math.min(Math.max(h.opacity, 0), 1) : 1;
-
-      const mesh = this._createHotspot(
-        h.Id,
-        { x: h.X, y: h.Y, z: h.Z },
-        shape,
-        dims,
-        rot,
-        colorHex,
-        opacity
-      );
-      this.scene.add(mesh);
-      this.hotspots[h.Id] = mesh;
     }
 
+    // ELS: la selezione dell'hotspot la lascio fuori dal check, 
+    // però forse potrebbe essere opportuno cambiare selezione solo se il json importato ha modificato hotsposts 
     if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
     else this._selectHotspot(null, { notify: false });
 
@@ -235,7 +246,7 @@ export class Hotspot3DViewer {
   }
 
   setCreationShape(shape) {
-    if (['sphere','box','cylinder'].includes(shape)) this.creationShape = shape;
+    if (['sphere', 'box', 'cylinder'].includes(shape)) this.creationShape = shape;
   }
 
   setBackground(bg) {
@@ -256,6 +267,7 @@ export class Hotspot3DViewer {
    * @param {string} url percorso della texture (es. /images/EiffelTower.jpg)
    */
   setPanorama(url) {
+    console.log("URL: ", url);
     if (!url) {
       // rimuovi panorama, eventualmente torna ad un colore di sfondo
       this.scene.background = new THREE.Color(0x000000);
@@ -307,11 +319,11 @@ export class Hotspot3DViewer {
   }
 
   highlightHotspot(id) {
-    this._selectHotspot(id, { notify:false, color: HOTSPOT_HIGHLIGHT_COLOR });
+    this._selectHotspot(id, { notify: false, color: HOTSPOT_HIGHLIGHT_COLOR });
   }
 
   getSharedData() { return this._buildSharedData(); }
-  requestSync()    { this._syncAll(); }
+  requestSync() { this._syncAll(); }
 
   /* =============== INTERNAL =============== */
 
@@ -332,7 +344,7 @@ export class Hotspot3DViewer {
     this.renderer.toneMappingExposure = 0.8;
 
     this._updateRendererSize();
-    this.renderer.domElement.style.width  = '100%';
+    this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     this.container.appendChild(this.renderer.domElement);
 
@@ -346,7 +358,7 @@ export class Hotspot3DViewer {
 
     // helper
     this.lightHelper = new THREE.DirectionalLightHelper(this.dirLight, 0.3);
-    this.axesHelper  = new THREE.AxesHelper(1);
+    this.axesHelper = new THREE.AxesHelper(1);
     this.scene.add(this.lightHelper);
     this.scene.add(this.axesHelper);
 
@@ -403,7 +415,7 @@ export class Hotspot3DViewer {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
         const sz = mesh.scale.z || 1;
-        const s  = (sx + sy + sz) / 3;
+        const s = (sx + sy + sz) / 3;
         mesh.scale.set(s, s, s);
       }
 
@@ -446,7 +458,7 @@ export class Hotspot3DViewer {
         if (ud.shape === 'sphere') {
           const s = (sx + sy + sz) / 3;
           const newR = (ud.dims?.r || DEFAULT_SPHERE_R) * s;
-          mesh.scale.set(1,1,1);
+          mesh.scale.set(1, 1, 1);
           this._resizeSelectedSphere(newR, true);
           return;
         } else if (ud.shape === 'box') {
@@ -456,7 +468,7 @@ export class Hotspot3DViewer {
             y: base.y * sy,
             z: base.z * sz
           };
-          mesh.scale.set(1,1,1);
+          mesh.scale.set(1, 1, 1);
           this._resizeSelectedBox(dims, true);
           return;
         } else if (ud.shape === 'cylinder') {
@@ -466,7 +478,7 @@ export class Hotspot3DViewer {
             r: base.r * radialS,
             h: base.h * sy
           };
-          mesh.scale.set(1,1,1);
+          mesh.scale.set(1, 1, 1);
           this._resizeSelectedCylinder(dims, true);
           return;
         }
@@ -1063,7 +1075,7 @@ export class Hotspot3DViewer {
       this._syncAll();
     };
 
-    ['x','y','z'].forEach(axis => {
+    ['x', 'y', 'z'].forEach(axis => {
       const uiAxis = this.ui.pos[axis];
 
       uiAxis.input.addEventListener('change', () => applyAxisValue(axis));
@@ -1145,7 +1157,7 @@ export class Hotspot3DViewer {
       this.ui.box.z.input.value = dims.z.toFixed(3);
     };
 
-    ['x','y','z'].forEach(axis => {
+    ['x', 'y', 'z'].forEach(axis => {
       const uiAxis = this.ui.box[axis];
       uiAxis.input.addEventListener('change', applyBoxDims);
       uiAxis.input.addEventListener('keydown', (ev) => {
@@ -1275,7 +1287,7 @@ export class Hotspot3DViewer {
       this._syncAll();
     };
 
-    ['x','y','z'].forEach(axis => {
+    ['x', 'y', 'z'].forEach(axis => {
       const uiAxis = this.ui.rot[axis];
 
       uiAxis.input.addEventListener('change', () => applyRotAxisValue(axis));
@@ -1361,7 +1373,7 @@ export class Hotspot3DViewer {
     dom.addEventListener('mousemove', (e) => {
       const dx = e.clientX - this.dragStart.x;
       const dy = e.clientY - this.dragStart.y;
-      if (Math.sqrt(dx*dx + dy*dy) > 5) this.isDragging = true;
+      if (Math.sqrt(dx * dx + dy * dy) > 5) this.isDragging = true;
     });
 
     dom.addEventListener('mouseup', (e) => {
@@ -1389,10 +1401,10 @@ export class Hotspot3DViewer {
   _buildSharedData() {
     const list = Object.entries(this.hotspots).map(([Id, mesh]) => {
       const shape = mesh.userData?.shape || 'sphere';
-      const dims  = mesh.userData?.dims  || {};
-      const rot   = mesh.userData?.rot;
+      const dims = mesh.userData?.dims || {};
+      const rot = mesh.userData?.rot;
       const colorHex = mesh.userData?.color || DEFAULT_HOTSPOT_HEX;
-      const opacity  = Number.isFinite(mesh.userData?.opacity)
+      const opacity = Number.isFinite(mesh.userData?.opacity)
         ? mesh.userData.opacity
         : (mesh.material.opacity ?? 1);
 
@@ -1403,12 +1415,12 @@ export class Hotspot3DViewer {
         dims: (shape === 'sphere')
           ? { r: dims?.r ?? DEFAULT_SPHERE_R }
           : (shape === 'box')
-          ? {
+            ? {
               x: dims?.x ?? DEFAULT_BOX.x,
               y: dims?.y ?? DEFAULT_BOX.y,
               z: dims?.z ?? DEFAULT_BOX.z
             }
-          : {
+            : {
               r: dims?.r ?? DEFAULT_CYL.r,
               h: dims?.h ?? DEFAULT_CYL.h
             },
@@ -1508,7 +1520,7 @@ export class Hotspot3DViewer {
     dims = this._clampDimsToLimits(shape, dims);
 
     const colorHex = DEFAULT_HOTSPOT_HEX;
-    const opacity  = 1.0;
+    const opacity = 1.0;
 
     const mesh = this._createHotspot(newId, point, shape, dims, rot, colorHex, opacity);
     this.scene.add(mesh);
@@ -1606,7 +1618,7 @@ export class Hotspot3DViewer {
 
   _updateHelpersVisibility() {
     const visible = (this.currentMode === 'edit');
-    if (this.axesHelper)  this.axesHelper.visible  = visible;
+    if (this.axesHelper) this.axesHelper.visible = visible;
     if (this.lightHelper) this.lightHelper.visible = visible;
   }
 
@@ -1691,11 +1703,11 @@ export class Hotspot3DViewer {
 
     this._applyLimitsToUI();
 
-    this.ui.pos.block.style.display    = 'block';
+    this.ui.pos.block.style.display = 'block';
     this.ui.sphere.block.style.display = 'none';
-    this.ui.box.block.style.display    = 'none';
-    this.ui.cyl.block.style.display    = 'none';
-    this.ui.rot.block.style.display    = 'none';
+    this.ui.box.block.style.display = 'none';
+    this.ui.cyl.block.style.display = 'none';
+    this.ui.rot.block.style.display = 'none';
 
     this._updatePosFieldsFromMesh(mesh);
 
@@ -1895,9 +1907,9 @@ export class Hotspot3DViewer {
       this.modelLimits.maxCylinder = { r: 0.6, h: 1.0 };
 
       this.modelBounds.min.set(-1, -1, -1);
-      this.modelBounds.max.set( 1,  1,  1);
-      this.modelBounds.center.set(0,0,0);
-      this.modelBounds.size.set(2,2,2);
+      this.modelBounds.max.set(1, 1, 1);
+      this.modelBounds.center.set(0, 0, 0);
+      this.modelBounds.size.set(2, 2, 2);
 
       this._applyLimitsToUI();
       return;
