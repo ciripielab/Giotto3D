@@ -28,6 +28,7 @@ const DEFAULT_CYL      = { r: 0.06, h: 0.12 };
 const DEFAULT_BOX_ROT  = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_CYL_ROT  = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_HOTSPOT_HEX = '#00ff00';
+const DEFAULT_MATERIAL = { roughness: 0.4, metalness: 0.1, envMapIntensity: 1.0 };
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -106,6 +107,7 @@ export class Hotspot3DViewer {
     // panorama
     this.texLoader = new THREE.TextureLoader();
     this._panoramaTexture = null;
+    this._panoramaEnvMap = null;
 
     // setup
     this._initScene(background);
@@ -176,6 +178,7 @@ export class Hotspot3DViewer {
 
       const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
       const opacity  = Number.isFinite(h.opacity) ? Math.min(Math.max(h.opacity, 0), 1) : 1;
+      const material = normalizeMaterial(h.material);
 
       const mesh = this._createHotspot(
         h.Id,
@@ -184,7 +187,8 @@ export class Hotspot3DViewer {
         dims,
         rot,
         colorHex,
-        opacity
+        opacity,
+        material
       );
       this.scene.add(mesh);
       this.hotspots[h.Id] = mesh;
@@ -193,6 +197,7 @@ export class Hotspot3DViewer {
     if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
     else this._selectHotspot(null, { notify: false });
 
+    this._updateHotspotVisibility();
     this._syncAll();
   }
 
@@ -229,6 +234,7 @@ export class Hotspot3DViewer {
 
     this._updateTransformControls();
     this._updateHelpersVisibility();
+    this._updateHotspotVisibility();
 
     this._emit({ type: 'onModeApplied', payload: { mode: this.currentMode } });
     this._syncAll();
@@ -259,9 +265,14 @@ export class Hotspot3DViewer {
     if (!url) {
       // rimuovi panorama, eventualmente torna ad un colore di sfondo
       this.scene.background = new THREE.Color(0x000000);
+      this.scene.environment = null;
       if (this._panoramaTexture) {
         this._panoramaTexture.dispose();
         this._panoramaTexture = null;
+      }
+      if (this._panoramaEnvMap) {
+        this._panoramaEnvMap.dispose();
+        this._panoramaEnvMap = null;
       }
       this._emit({
         type: 'onBackgroundPanoramaChanged',
@@ -276,6 +287,20 @@ export class Hotspot3DViewer {
         tex.mapping = THREE.EquirectangularReflectionMapping;
         this._panoramaTexture = tex;
         this.scene.background = tex;
+        if (this._panoramaEnvMap) {
+          this._panoramaEnvMap.dispose();
+          this._panoramaEnvMap = null;
+        }
+        if (this.renderer) {
+          const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
+          pmremGenerator.compileEquirectangularShader();
+          const envMap = pmremGenerator.fromEquirectangular(tex).texture;
+          pmremGenerator.dispose();
+          this._panoramaEnvMap = envMap;
+          this.scene.environment = envMap;
+        } else {
+          this.scene.environment = tex;
+        }
         this._emit({
           type: 'onBackgroundPanoramaChanged',
           payload: { url }
@@ -493,7 +518,8 @@ export class Hotspot3DViewer {
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
         color: ud.color,
-        opacity: ud.opacity
+        opacity: ud.opacity,
+        material: { ...(ud.material || {}) }
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -912,6 +938,61 @@ export class Hotspot3DViewer {
     opacityBlock.appendChild(opacityLabel);
     opacityBlock.appendChild(opacitySlider);
 
+    // Material
+    const materialBlock = document.createElement('div');
+    materialBlock.style.marginTop = '6px';
+
+    const materialTitle = document.createElement('div');
+    materialTitle.textContent = 'Material';
+    materialTitle.style.fontSize = '12px';
+    materialTitle.style.opacity = '.8';
+    materialTitle.style.margin = '6px 0 4px 0';
+    materialBlock.appendChild(materialTitle);
+
+    const makeMaterialRow = (labelText, min, max, step, value) => {
+      const row = document.createElement('div');
+      row.style.marginBottom = '4px';
+
+      const label = document.createElement('label');
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.justifyContent = 'space-between';
+      label.style.fontSize = '12px';
+      label.style.opacity = '.8';
+
+      const text = document.createElement('span');
+      text.textContent = labelText;
+
+      const valueLabel = document.createElement('span');
+      valueLabel.textContent = Number(value).toFixed(2);
+      valueLabel.style.fontSize = '11px';
+      valueLabel.style.opacity = '.7';
+
+      label.appendChild(text);
+      label.appendChild(valueLabel);
+
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = String(min);
+      slider.max = String(max);
+      slider.step = String(step);
+      slider.value = String(value);
+      slider.style.width = '100%';
+
+      row.appendChild(label);
+      row.appendChild(slider);
+
+      return { row, slider, label: valueLabel };
+    };
+
+    const roughnessRow = makeMaterialRow('roughness', 0, 1, 0.01, DEFAULT_MATERIAL.roughness);
+    const metalnessRow = makeMaterialRow('metalness', 0, 1, 0.01, DEFAULT_MATERIAL.metalness);
+    const envMapRow = makeMaterialRow('envMap', 0, 3, 0.05, DEFAULT_MATERIAL.envMapIntensity);
+
+    materialBlock.appendChild(roughnessRow.row);
+    materialBlock.appendChild(metalnessRow.row);
+    materialBlock.appendChild(envMapRow.row);
+
     // ===== ACTIONS =====
     const actions = document.createElement('div');
     Object.assign(actions.style, {
@@ -958,6 +1039,7 @@ export class Hotspot3DViewer {
     root.appendChild(cylBlock);
     root.appendChild(colorBlock);
     root.appendChild(opacityBlock);
+    root.appendChild(materialBlock);
     root.appendChild(actions);
 
     // ===== memorizzazione refs UI =====
@@ -992,6 +1074,12 @@ export class Hotspot3DViewer {
       },
       color: { block: colorBlock, input: colorInput },
       opacity: { block: opacityBlock, slider: opacitySlider, label: opacityValueLabel },
+      material: {
+        block: materialBlock,
+        roughness: { slider: roughnessRow.slider, label: roughnessRow.label },
+        metalness: { slider: metalnessRow.slider, label: metalnessRow.label },
+        envMapIntensity: { slider: envMapRow.slider, label: envMapRow.label },
+      },
       btnDelete, btnClose,
       btnGizmo,
       updateGizmoButtonUI,
@@ -1027,7 +1115,8 @@ export class Hotspot3DViewer {
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
         color: ud.color,
-        opacity: ud.opacity
+        opacity: ud.opacity,
+        material: { ...(ud.material || {}) }
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -1056,7 +1145,8 @@ export class Hotspot3DViewer {
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
         color: ud.color,
-        opacity: ud.opacity
+        opacity: ud.opacity,
+        material: { ...(ud.material || {}) }
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -1230,7 +1320,8 @@ export class Hotspot3DViewer {
         dims: { ...mesh.userData.dims },
         rot: { ...mesh.userData.rot },
         color: mesh.userData.color,
-        opacity: mesh.userData.opacity
+        opacity: mesh.userData.opacity,
+        material: { ...(mesh.userData.material || {}) }
       };
       this._emit({ type: 'onHotspotUpdated', payload });
       this._syncAll();
@@ -1269,7 +1360,8 @@ export class Hotspot3DViewer {
         dims: { ...mesh.userData.dims },
         rot: { ...mesh.userData.rot },
         color: mesh.userData.color,
-        opacity: mesh.userData.opacity
+        opacity: mesh.userData.opacity,
+        material: { ...(mesh.userData.material || {}) }
       };
       this._emit({ type: 'onHotspotUpdated', payload });
       this._syncAll();
@@ -1304,7 +1396,8 @@ export class Hotspot3DViewer {
         shape: mesh.userData.shape,
         dims: { ...mesh.userData.dims },
         color: mesh.userData.color,
-        opacity: mesh.userData.opacity
+        opacity: mesh.userData.opacity,
+        material: { ...(mesh.userData.material || {}) }
       };
       if (mesh.userData.rot) payload.rot = { ...mesh.userData.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -1337,7 +1430,8 @@ export class Hotspot3DViewer {
         shape: ud.shape,
         dims: { ...(ud.dims || {}) },
         color: ud.color,
-        opacity: ud.opacity
+        opacity: ud.opacity,
+        material: { ...(ud.material || {}) }
       };
       if (ud.rot) payload.rot = { ...ud.rot };
       this._emit({ type: 'onHotspotUpdated', payload });
@@ -1345,6 +1439,49 @@ export class Hotspot3DViewer {
     };
     this.ui.opacity.slider.addEventListener('input', onOpacityChange);
     this.ui.opacity.slider.addEventListener('change', onOpacityChange);
+
+    const applyMaterialValue = (key, min, max) => {
+      const id = this.selectedHotspotId; if (!id) return;
+      const mesh = this.hotspots[id]; if (!mesh) return;
+
+      let v = parseFloat(this.ui.material[key].slider.value);
+      if (!Number.isFinite(v)) v = DEFAULT_MATERIAL[key];
+      v = Math.min(Math.max(v, min), max);
+      this.ui.material[key].slider.value = v.toString();
+      this.ui.material[key].label.textContent = v.toFixed(2);
+
+      const current = normalizeMaterial(mesh.userData?.material ?? {
+        roughness: mesh.material?.roughness,
+        metalness: mesh.material?.metalness,
+        envMapIntensity: mesh.material?.envMapIntensity
+      });
+      current[key] = v;
+      mesh.userData.material = { ...current };
+
+      mesh.material[key] = v;
+      mesh.material.needsUpdate = true;
+
+      const ud = mesh.userData || {};
+      const p = mesh.position;
+      const payload = {
+        Id: id,
+        X: p.x, Y: p.y, Z: p.z,
+        shape: ud.shape,
+        dims: { ...(ud.dims || {}) },
+        color: ud.color,
+        opacity: ud.opacity,
+        material: { ...(ud.material || {}) }
+      };
+      if (ud.rot) payload.rot = { ...ud.rot };
+      this._emit({ type: 'onHotspotUpdated', payload });
+      this._syncAll();
+    };
+
+    ['roughness','metalness','envMapIntensity'].forEach((key) => {
+      const limits = (key === 'envMapIntensity') ? [0, 3] : [0, 1];
+      this.ui.material[key].slider.addEventListener('input', () => applyMaterialValue(key, limits[0], limits[1]));
+      this.ui.material[key].slider.addEventListener('change', () => applyMaterialValue(key, limits[0], limits[1]));
+    });
 
     this.container.appendChild(root);
     this._applyLimitsToUI();
@@ -1395,6 +1532,11 @@ export class Hotspot3DViewer {
       const opacity  = Number.isFinite(mesh.userData?.opacity)
         ? mesh.userData.opacity
         : (mesh.material.opacity ?? 1);
+      const material = normalizeMaterial(mesh.userData?.material ?? {
+        roughness: mesh.material?.roughness,
+        metalness: mesh.material?.metalness,
+        envMapIntensity: mesh.material?.envMapIntensity
+      });
 
       const base = {
         Id,
@@ -1413,7 +1555,8 @@ export class Hotspot3DViewer {
               h: dims?.h ?? DEFAULT_CYL.h
             },
         color: colorHex,
-        opacity
+        opacity,
+        material
       };
 
       if (shape === 'box' || shape === 'cylinder') {
@@ -1485,6 +1628,7 @@ export class Hotspot3DViewer {
       return;
     }
 
+    if (this._isUIOpen()) return;
     if (!this.model) return;
     const intersects = this.raycaster.intersectObject(this.model, true);
     if (intersects.length === 0) return;
@@ -1509,8 +1653,9 @@ export class Hotspot3DViewer {
 
     const colorHex = DEFAULT_HOTSPOT_HEX;
     const opacity  = 1.0;
+    const material = normalizeMaterial();
 
-    const mesh = this._createHotspot(newId, point, shape, dims, rot, colorHex, opacity);
+    const mesh = this._createHotspot(newId, point, shape, dims, rot, colorHex, opacity, material);
     this.scene.add(mesh);
     this.hotspots[newId] = mesh;
     this._selectHotspot(newId);
@@ -1521,7 +1666,8 @@ export class Hotspot3DViewer {
       shape,
       dims,
       color: colorHex,
-      opacity
+      opacity,
+      material
     };
     if (rot) payload.rot = rot;
 
@@ -1610,6 +1756,26 @@ export class Hotspot3DViewer {
     if (this.lightHelper) this.lightHelper.visible = visible;
   }
 
+  _updateHotspotVisibility() {
+    const isHidden = (this.currentMode === 'hide');
+    Object.values(this.hotspots).forEach((mesh) => {
+      const baseOpacity = Number.isFinite(mesh.userData?.opacity)
+        ? mesh.userData.opacity
+        : (Number.isFinite(mesh.material?.opacity) ? mesh.material.opacity : 1);
+      if (isHidden) {
+        mesh.material.transparent = true;
+        mesh.material.opacity = 0;
+        mesh.material.colorWrite = false;
+      } else {
+        const o = Math.min(Math.max(baseOpacity, 0), 1);
+        mesh.material.opacity = o;
+        mesh.material.transparent = o < 1;
+        mesh.material.colorWrite = true;
+      }
+      mesh.material.needsUpdate = true;
+    });
+  }
+
   _createHotspot(
     id,
     pos,
@@ -1617,7 +1783,8 @@ export class Hotspot3DViewer {
     dims = { r: DEFAULT_SPHERE_R },
     rotDeg,
     colorHex = DEFAULT_HOTSPOT_HEX,
-    opacity = 1.0
+    opacity = 1.0,
+    material = DEFAULT_MATERIAL
   ) {
     let geom;
     if (shape === 'box') {
@@ -1635,10 +1802,14 @@ export class Hotspot3DViewer {
       shape = 'sphere';
     }
 
+    const matParams = normalizeMaterial(material);
     const mat = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
     const o = Number.isFinite(opacity) ? Math.min(Math.max(opacity, 0), 1) : 1;
     mat.opacity = o;
     mat.transparent = o < 1;
+    mat.roughness = matParams.roughness;
+    mat.metalness = matParams.metalness;
+    mat.envMapIntensity = matParams.envMapIntensity;
 
     const mesh = new THREE.Mesh(geom, mat);
     mesh.position.set(pos.x ?? pos?.x, pos.y ?? pos?.y, pos.z ?? pos?.z);
@@ -1662,6 +1833,7 @@ export class Hotspot3DViewer {
     mesh.userData.shape = shape;
     mesh.userData.color = normalizeHex(colorHex);
     mesh.userData.opacity = o;
+    mesh.userData.material = { ...matParams };
 
     mesh.material.color.set(mesh.userData.color);
 
@@ -1744,6 +1916,20 @@ export class Hotspot3DViewer {
     this.ui.opacity.slider.value = op.toString();
     this.ui.opacity.label.textContent = op.toFixed(2);
 
+    const matParams = normalizeMaterial(mesh.userData?.material ?? {
+      roughness: mesh.material?.roughness,
+      metalness: mesh.material?.metalness,
+      envMapIntensity: mesh.material?.envMapIntensity
+    });
+    mesh.userData.material = { ...matParams };
+    this.ui.material.block.style.display = 'block';
+    this.ui.material.roughness.slider.value = matParams.roughness.toString();
+    this.ui.material.roughness.label.textContent = matParams.roughness.toFixed(2);
+    this.ui.material.metalness.slider.value = matParams.metalness.toString();
+    this.ui.material.metalness.label.textContent = matParams.metalness.toFixed(2);
+    this.ui.material.envMapIntensity.slider.value = matParams.envMapIntensity.toString();
+    this.ui.material.envMapIntensity.label.textContent = matParams.envMapIntensity.toFixed(2);
+
     if (this.ui.modeSelect) this.ui.modeSelect.value = this.gizmoMode;
 
     this.ui.root.style.display = 'block';
@@ -1756,6 +1942,11 @@ export class Hotspot3DViewer {
     this.ui.rot.block.style.display = 'none';
     this.ui.color.block.style.display = 'none';
     this.ui.opacity.block.style.display = 'none';
+    this.ui.material.block.style.display = 'none';
+  }
+
+  _isUIOpen() {
+    return !!(this.ui && this.ui.root && this.ui.root.style.display !== 'none');
   }
 
   _updatePosFieldsFromMesh(mesh) {
@@ -1806,7 +1997,8 @@ export class Hotspot3DViewer {
           shape: 'sphere',
           dims: { r },
           color: mesh.userData.color,
-          opacity: mesh.userData.opacity
+          opacity: mesh.userData.opacity,
+          material: { ...(mesh.userData.material || {}) }
         }
       });
       if (this.ui && this.selectedHotspotId === id) this._showUIFor(mesh);
@@ -1842,7 +2034,8 @@ export class Hotspot3DViewer {
           dims: { ...dims },
           rot: { ...mesh.userData.rot },
           color: mesh.userData.color,
-          opacity: mesh.userData.opacity
+          opacity: mesh.userData.opacity,
+          material: { ...(mesh.userData.material || {}) }
         }
       });
       if (this.ui && this.selectedHotspotId === id) this._showUIFor(mesh);
@@ -1878,7 +2071,8 @@ export class Hotspot3DViewer {
           dims: { ...dims },
           rot: { ...mesh.userData.rot },
           color: mesh.userData.color,
-          opacity: mesh.userData.opacity
+          opacity: mesh.userData.opacity,
+          material: { ...(mesh.userData.material || {}) }
         }
       });
       if (this.ui && this.selectedHotspotId === id) this._showUIFor(mesh);
@@ -1981,4 +2175,13 @@ function normalizeHex(s) {
   if (t.startsWith('#')) return t.length === 7 ? t.toLowerCase() : DEFAULT_HOTSPOT_HEX;
   if (/^[0-9a-fA-F]{6}$/.test(t)) return ('#' + t).toLowerCase();
   return DEFAULT_HOTSPOT_HEX;
+}
+
+function normalizeMaterial(m) {
+  const clamp = (v, mn, mx, dflt) => Number.isFinite(v) ? Math.min(Math.max(v, mn), mx) : dflt;
+  return {
+    roughness: clamp(m?.roughness, 0, 1, DEFAULT_MATERIAL.roughness),
+    metalness: clamp(m?.metalness, 0, 1, DEFAULT_MATERIAL.metalness),
+    envMapIntensity: clamp(m?.envMapIntensity, 0, 3, DEFAULT_MATERIAL.envMapIntensity)
+  };
 }
