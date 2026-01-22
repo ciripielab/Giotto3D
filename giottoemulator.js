@@ -117,9 +117,9 @@ loadPanoramaList();
 /* ===== Viewer singolo ===== */
 const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
   onEvent: ({ type, payload }) => {
-    // Messaggi di selezione in View/Edit Mode
+    // Messaggi di selezione di un hotspot in View/Edit/Hide Mode
     if (type === 'onHotspotSelected') {
-      if (shared.mode === 'view' || shared.mode === 'edit') {
+      if (shared.mode === 'view' || shared.mode === 'edit' || shared.mode === 'hide') {
         const id = payload?.Id;
         if (id) pushMessage(`Hotspot selezionato: ${id}`);
         else pushMessage('Nessun hotspot selezionato');
@@ -281,6 +281,13 @@ document.getElementById('btn-edit').addEventListener('click', () => {
   pushMessage('Modalità: edit');
 });
 
+document.getElementById('btn-hide').addEventListener('click', () => {
+  shared.mode = 'hide';
+  viewer.setMode('hide');
+  render('setMode(hide)');
+  pushMessage('ModalitÇÿ: hide');
+});
+
 document.getElementById('btn-sync').addEventListener('click', () => {
   viewer.requestSync();
   render('REQUEST_SYNC');
@@ -368,6 +375,7 @@ function downloadJSON() {
 }
 document.getElementById('btn-download').addEventListener('click', downloadJSON);
 
+
 // ELS: modifiche per rendere opzionali tutte le proprietà del json
 // obiettivo -> poter inviare al viewer un json con le sole proprietà da modificare
 // il validatore dovrà validare solo le proprietà presenti
@@ -376,17 +384,17 @@ function validateSharedData(data) {
   const ok = () => ({ valid: true });
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-  // ELS: validazione oggetto, non cambia nulla
-  if (typeof data !== 'object' || data == null) return err('root non è oggetto');
+   // ELS: validazione oggetto, non cambia nulla
+  if (typeof data !== 'object' || data === null) return err('root non è oggetto');
 
   // ELS: se esiste mode lo valida
   if (data.mode != null && !['view', 'edit', 'hide'].includes(data.mode)) return err('mode non valido');
 
   // ELS: se esiste model3D lo valida
   if (data.model3D && typeof data.model3D !== 'string') return err('model3D deve essere stringa');
-
-  const pov = data.pointOfView;
+  
   // ELS: se esiste pointOfView lo valida
+  const pov = data.pointOfView;
   if (pov != null && (!isNum(pov.X) || !isNum(pov.Y) || !isNum(pov.Z))) return err('pointOfView deve avere X,Y,Z numerici');
 
   // ELS: se esiste background lo valida
@@ -467,9 +475,10 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     const { valid, error } = validateSharedData(data);
     if (!valid) { alert('Import fallito: ' + error); return; }
 
+
     // ELS: per gestire upload di json parziali mantenendo le proprietà già caricate facciamo update di 
     // shared definendo le singole proprietà (operazione che si potrebbe fattorizzare facilmente con una utility)
-    //shared = data;
+    // shared = data;
     shared = {
       mode: data.mode ?? shared.mode,
       model3D: data.model3D ?? shared.model3D,
@@ -499,6 +508,7 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
         $panoramaPreset.value = match ? fileName : '';
       }
     }
+
     render('imported');
     pushMessage('JSON importato');
   } catch (err) {
@@ -507,6 +517,7 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
   } finally {
     e.target.value = '';
   }
+
 });
 
 // render iniziale
