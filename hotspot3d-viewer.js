@@ -21,6 +21,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 const HOTSPOT_SELECTED_COLOR = 0xffa500;
 const HOTSPOT_HIGHLIGHT_COLOR = 0xff0000;
+const LIGHT_SELECTED_COLOR = 0x00b7ff;
 
 const DEFAULT_SPHERE_R = 0.05;
 const DEFAULT_BOX = { x: 0.08, y: 0.08, z: 0.08 };
@@ -59,6 +60,8 @@ export class Hotspot3DViewer {
     this.dirLight = null;
     this.axesHelper = null;
     this.lightHelper = null;
+    this.lightMarkers = {};
+    this.selectedLightId = null;
 
     // modello
     this.model = null;
@@ -95,6 +98,7 @@ export class Hotspot3DViewer {
 
     // UI refs
     this.ui = null;
+    this.lightUI = null;
 
     // TransformControls
     this.transformControls = null;
@@ -108,6 +112,9 @@ export class Hotspot3DViewer {
     this.texLoader = new THREE.TextureLoader();
     this._panoramaTexture = null;
     this._panoramaEnvMap = null;
+    this._envMapIntensity = 1.0;
+    this._emissiveIntensity = 1.0;
+    this._exposure = 0.8;
 
     // setup
     this._initScene(background);
@@ -224,6 +231,8 @@ export class Hotspot3DViewer {
         this.currentModelUrl = url;
         this.pendingModelUrl = '';
         this._recomputeLimitsFromModel();
+        this._applyEnvMapIntensityToModel(this._envMapIntensity);
+        this._applyEmissiveIntensityToModel(this._emissiveIntensity);
         this._syncAll();
       },
       undefined,
@@ -258,6 +267,16 @@ export class Hotspot3DViewer {
     try {
       const color = new THREE.Color(bg);
       this.scene.background = color;
+      // Clear environment map so IBL doesn't keep lighting the model
+      this.scene.environment = null;
+      if (this._panoramaTexture) {
+        this._panoramaTexture.dispose();
+        this._panoramaTexture = null;
+      }
+      if (this._panoramaEnvMap) {
+        this._panoramaEnvMap.dispose();
+        this._panoramaEnvMap = null;
+      }
       this._emit({
         type: 'onBackgroundChanged',
         payload: { color: color.getHexString() }
@@ -330,15 +349,37 @@ export class Hotspot3DViewer {
   /**
    * Imposta l'intensità della luce direzionale principale (0..3 tipicamente).
    */
-  setLightIntensity(value) {
+  /**
+   * Imposta l'envMapIntensity sui materiali del modello (0..3).
+   */
+  setEnvMapIntensity(value) {
     const v = Number(value);
-    if (!Number.isFinite(v) || !this.dirLight) return;
+    if (!Number.isFinite(v)) return;
     const clamped = Math.min(Math.max(v, 0), 3);
-    this.dirLight.intensity = clamped;
-    this._emit({
-      type: 'onLightChanged',
-      payload: { intensity: clamped }
-    });
+    this._envMapIntensity = clamped;
+    this._applyEnvMapIntensityToModel(clamped);
+  }
+
+  /**
+   * Imposta emissiveIntensity sui materiali del modello (0..3).
+   */
+  setEmissiveIntensity(value) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return;
+    const clamped = Math.min(Math.max(v, 0), 3);
+    this._emissiveIntensity = clamped;
+    this._applyEmissiveIntensityToModel(clamped);
+  }
+
+  /**
+   * Imposta l'esposizione del renderer (0..2).
+   */
+  setExposure(value) {
+    const v = Number(value);
+    if (!Number.isFinite(v) || !this.renderer) return;
+    const clamped = Math.min(Math.max(v, 0), 2);
+    this._exposure = clamped;
+    this.renderer.toneMappingExposure = clamped;
   }
 
   highlightHotspot(id) {
@@ -385,6 +426,9 @@ export class Hotspot3DViewer {
     this.scene.add(this.lightHelper);
     this.scene.add(this.axesHelper);
 
+    // light markers (clickable in Edit mode)
+    this._createLightMarkers();
+
     this._updateHelpersVisibility();
 
     this.loader = new GLTFLoader();
@@ -429,6 +473,16 @@ export class Hotspot3DViewer {
 
     // aggiornamento live con gizmo
     this.transformControls.addEventListener('objectChange', () => {
+      if (this.selectedLightId) {
+        const info = this._getLightById(this.selectedLightId);
+        if (!info) return;
+        if (info.type === 'directional') {
+          info.light.position.copy(info.marker.position);
+          if (this.lightHelper) this.lightHelper.update();
+          this._updateLightUIFromLight(info.type);
+        }
+        return;
+      }
       if (!this.selectedHotspotId) return;
       const mesh = this.hotspots[this.selectedHotspotId];
       if (!mesh) return;
@@ -466,6 +520,16 @@ export class Hotspot3DViewer {
 
     // commit al mouseUp
     this.transformControls.addEventListener('mouseUp', () => {
+      if (this.selectedLightId) {
+        const info = this._getLightById(this.selectedLightId);
+        if (!info) return;
+        if (info.type === 'directional') {
+          info.light.position.copy(info.marker.position);
+          if (this.lightHelper) this.lightHelper.update();
+          this._updateLightUIFromLight(info.type);
+        }
+        return;
+      }
       if (!this.selectedHotspotId) return;
       const mesh = this.hotspots[this.selectedHotspotId];
       if (!mesh) return;
@@ -614,11 +678,25 @@ export class Hotspot3DViewer {
         btnGizmo.style.borderColor = '#00000030';
       }
     };
-    updateGizmoButtonUI();
+    this._updateGizmoButtons = () => {
+      updateGizmoButtonUI();
+      if (this.lightUI?.gizmoBtn) {
+        if (this.gizmoEnabled) {
+          this.lightUI.gizmoBtn.textContent = 'Gizmo ON';
+          this.lightUI.gizmoBtn.style.background = '#d1f5d3';
+          this.lightUI.gizmoBtn.style.borderColor = '#58b965';
+        } else {
+          this.lightUI.gizmoBtn.textContent = 'Gizmo OFF';
+          this.lightUI.gizmoBtn.style.background = '#f0f0f0';
+          this.lightUI.gizmoBtn.style.borderColor = '#00000030';
+        }
+      }
+    };
+    this._updateGizmoButtons();
 
     btnGizmo.addEventListener('click', () => {
       this.gizmoEnabled = !this.gizmoEnabled;
-      updateGizmoButtonUI();
+      this._updateGizmoButtons();
       this._updateTransformControls();
     });
 
@@ -1505,6 +1583,238 @@ export class Hotspot3DViewer {
 
     this.container.appendChild(root);
     this._applyLimitsToUI();
+
+    // ===== LIGHT UI =====
+    const lightRoot = document.createElement('div');
+    Object.assign(lightRoot.style, {
+      position: 'absolute', right: '12px', top: '12px', zIndex: '10',
+      minWidth: '220px', maxWidth: '280px',
+      background: 'rgba(255,255,255,0.9)', color: '#111',
+      borderRadius: '10px', padding: '10px 12px',
+      fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+      boxShadow: '0 6px 24px rgba(0,0,0,0.25)', display: 'none'
+    });
+
+    const lightTitle = document.createElement('h4');
+    lightTitle.style.margin = '0 0 6px 0';
+    lightTitle.style.fontSize = '14px';
+    lightTitle.textContent = 'Light';
+    lightRoot.appendChild(lightTitle);
+
+    this._bindDragAndResize(lightRoot, lightTitle, 200, 160, 320, 360);
+
+    const lightType = document.createElement('div');
+    lightType.style.fontSize = '12px';
+    lightType.style.opacity = '.8';
+    lightType.style.marginBottom = '6px';
+    lightRoot.appendChild(lightType);
+
+    const lightColorRow = document.createElement('div');
+    Object.assign(lightColorRow.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '8px'
+    });
+    const lightColorLabel = document.createElement('span');
+    lightColorLabel.textContent = 'Color';
+    lightColorLabel.style.fontSize = '12px';
+    const lightColorInput = document.createElement('input');
+    lightColorInput.type = 'color';
+    lightColorInput.style.width = '44px';
+    lightColorInput.style.height = '24px';
+    lightColorInput.style.border = '1px solid #00000030';
+    lightColorInput.style.borderRadius = '6px';
+    lightColorInput.style.padding = '0';
+    lightColorInput.style.background = '#fff';
+    lightColorRow.appendChild(lightColorLabel);
+    lightColorRow.appendChild(lightColorInput);
+    lightRoot.appendChild(lightColorRow);
+
+    const intensityRow = document.createElement('div');
+    Object.assign(intensityRow.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '8px'
+    });
+    const intensityLabel = document.createElement('span');
+    intensityLabel.textContent = 'Intensity';
+    intensityLabel.style.fontSize = '12px';
+    const intensitySlider = document.createElement('input');
+    intensitySlider.type = 'range';
+    intensitySlider.min = '0';
+    intensitySlider.max = '3';
+    intensitySlider.step = '0.05';
+    intensitySlider.style.flex = '1';
+    const intensityValue = document.createElement('span');
+    intensityValue.style.fontSize = '12px';
+    intensityValue.style.width = '36px';
+    intensityValue.textContent = '0.00';
+    intensityRow.appendChild(intensityLabel);
+    intensityRow.appendChild(intensitySlider);
+    intensityRow.appendChild(intensityValue);
+    lightRoot.appendChild(intensityRow);
+
+    const lightPowerRow = document.createElement('div');
+    Object.assign(lightPowerRow.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '8px'
+    });
+    const lightPowerLabel = document.createElement('span');
+    lightPowerLabel.textContent = 'Power';
+    lightPowerLabel.style.fontSize = '12px';
+    const lightPowerTrack = document.createElement('div');
+    Object.assign(lightPowerTrack.style, {
+      position: 'relative',
+      width: '44px',
+      height: '24px',
+      background: '#ddd',
+      borderRadius: '12px',
+      border: '1px solid #00000030',
+      cursor: 'pointer',
+      transition: 'background 120ms ease'
+    });
+    const lightPowerThumb = document.createElement('div');
+    Object.assign(lightPowerThumb.style, {
+      position: 'absolute',
+      top: '2px',
+      left: '2px',
+      width: '18px',
+      height: '18px',
+      background: '#fff',
+      borderRadius: '50%',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+      transition: 'transform 120ms ease'
+    });
+    const lightPowerToggle = document.createElement('input');
+    lightPowerToggle.type = 'checkbox';
+    lightPowerToggle.style.position = 'absolute';
+    lightPowerToggle.style.opacity = '0';
+    lightPowerToggle.style.pointerEvents = 'none';
+    lightPowerToggle.style.width = '0';
+    lightPowerToggle.style.height = '0';
+    lightPowerTrack.appendChild(lightPowerThumb);
+    lightPowerRow.appendChild(lightPowerLabel);
+    lightPowerRow.appendChild(lightPowerTrack);
+    lightRoot.appendChild(lightPowerRow);
+
+    const lightGizmoRow = document.createElement('div');
+    Object.assign(lightGizmoRow.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '8px'
+    });
+    const lightGizmoLabel = document.createElement('span');
+    lightGizmoLabel.textContent = 'Gizmo';
+    lightGizmoLabel.style.fontSize = '12px';
+    const lightGizmoBtn = document.createElement('button');
+    Object.assign(lightGizmoBtn.style, {
+      padding: '.35rem .6rem',
+      border: '1px solid #00000030',
+      background: '#f0f0f0',
+      borderRadius: '.5rem',
+      cursor: 'pointer',
+      fontSize: '12px',
+      whiteSpace: 'nowrap'
+    });
+    lightGizmoRow.appendChild(lightGizmoLabel);
+    lightGizmoRow.appendChild(lightGizmoBtn);
+    lightRoot.appendChild(lightGizmoRow);
+
+    const posBlockLight = document.createElement('div');
+    const posTitleLight = document.createElement('div');
+    posTitleLight.textContent = 'Position';
+    posTitleLight.style.fontSize = '12px';
+    posTitleLight.style.opacity = '.8';
+    posTitleLight.style.marginBottom = '4px';
+    posBlockLight.appendChild(posTitleLight);
+
+    const makeLightAxisRow = (axisLabel) => {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        marginBottom: '4px'
+      });
+      const lab = document.createElement('span');
+      lab.textContent = axisLabel;
+      lab.style.fontSize = '12px';
+      lab.style.width = '16px';
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = '0.001';
+      input.readOnly = true;
+      input.style.width = '80px';
+      input.style.fontSize = '12px';
+      input.style.padding = '2px 4px';
+      input.style.borderRadius = '4px';
+      input.style.border = '1px solid #00000030';
+      input.style.background = '#f6f6f6';
+      row.appendChild(lab);
+      row.appendChild(input);
+      return { row, input };
+    };
+
+    const lightPosX = makeLightAxisRow('X');
+    const lightPosY = makeLightAxisRow('Y');
+    const lightPosZ = makeLightAxisRow('Z');
+    posBlockLight.appendChild(lightPosX.row);
+    posBlockLight.appendChild(lightPosY.row);
+    posBlockLight.appendChild(lightPosZ.row);
+    lightRoot.appendChild(posBlockLight);
+
+    const lightActions = document.createElement('div');
+    Object.assign(lightActions.style, {
+      display: 'flex',
+      justifyContent: 'flex-end',
+      marginTop: '8px'
+    });
+    const lightClose = document.createElement('button');
+    lightClose.textContent = 'Close';
+    Object.assign(lightClose.style, {
+      padding: '.35rem .6rem',
+      border: '1px solid #00000030',
+      background: '#f6f6f6',
+      borderRadius: '.5rem',
+      cursor: 'pointer',
+      fontSize: '12px'
+    });
+    lightActions.appendChild(lightClose);
+    lightRoot.appendChild(lightActions);
+
+    lightColorInput.addEventListener('input', () => this._applyLightFromUI());
+    intensitySlider.addEventListener('input', () => this._applyLightFromUI());
+    lightClose.addEventListener('click', () => this._selectLight(null));
+    lightGizmoBtn.addEventListener('click', () => {
+      this.gizmoEnabled = !this.gizmoEnabled;
+      this._updateGizmoButtons?.();
+      this._updateTransformControls();
+    });
+    lightPowerTrack.addEventListener('click', () => {
+      lightPowerToggle.checked = !lightPowerToggle.checked;
+      this._toggleLightPower();
+    });
+
+    this.lightUI = {
+      root: lightRoot,
+      title: lightTitle,
+      type: lightType,
+      color: lightColorInput,
+      intensity: { slider: intensitySlider, label: intensityValue },
+      pos: { block: posBlockLight, x: lightPosX.input, y: lightPosY.input, z: lightPosZ.input },
+      gizmoBtn: lightGizmoBtn,
+      powerToggle: lightPowerToggle,
+      powerTrack: lightPowerTrack,
+      powerThumb: lightPowerThumb,
+      gizmoRow: lightGizmoRow
+    };
+
+    this.container.appendChild(lightRoot);
   }
 
   _bindDragAndResize(root, title, MIN_W, MIN_H, MAX_W, MAX_H) {
@@ -1837,6 +2147,20 @@ export class Hotspot3DViewer {
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouse, this.camera);
 
+    if (this.currentMode === 'edit') {
+      const lightMarkers = this._getLightMarkers();
+      if (lightMarkers.length > 0) {
+        const lightHit = this.raycaster.intersectObjects(lightMarkers, false);
+        if (lightHit.length > 0) {
+          const id = lightHit[0].object?.userData?.lightId;
+          if (id) {
+            this._selectLight(id);
+            return;
+          }
+        }
+      }
+    }
+
     const hotspotMeshes = Object.values(this.hotspots);
     if (hotspotMeshes.length > 0) {
       const hotspotHit = this.raycaster.intersectObjects(hotspotMeshes, false);
@@ -1851,10 +2175,14 @@ export class Hotspot3DViewer {
       return;
     }
 
-    if (this._isUIOpen()) return;
+    if (this._isUIOpen() || this._isLightUIOpen()) return;
     if (!this.model) return;
     const intersects = this.raycaster.intersectObject(this.model, true);
-    if (intersects.length === 0) return;
+    if (intersects.length === 0) {
+      this._selectLight(null);
+      this._selectHotspot(null);
+      return;
+    }
 
     const point = intersects[0].point;
     const newId = `hs_${Date.now()}`;
@@ -1923,6 +2251,10 @@ export class Hotspot3DViewer {
   }
 
   _selectHotspot(id, { notify = true, color = HOTSPOT_SELECTED_COLOR } = {}) {
+    if (this.selectedLightId) {
+      this._selectLight(null, { notify: false, clearHotspot: false });
+    }
+
     // ripristina colore base
     if (this.selectedHotspotId && this.hotspots[this.selectedHotspotId]) {
       const prev = this.hotspots[this.selectedHotspotId];
@@ -1956,16 +2288,25 @@ export class Hotspot3DViewer {
   _updateTransformControls() {
     if (!this.transformControls || !this.transformHelper) return;
 
-    const canShow =
-      this.currentMode === 'edit' &&
-      this.gizmoEnabled &&
-      this.selectedHotspotId &&
-      this.hotspots[this.selectedHotspotId];
+    let target = null;
+    let mode = this.gizmoMode;
 
-    if (canShow) {
-      const mesh = this.hotspots[this.selectedHotspotId];
-      this.transformControls.attach(mesh);
-      this.transformControls.setMode(this.gizmoMode);
+    if (this.currentMode === 'edit' && this.gizmoEnabled) {
+      if (this.selectedLightId) {
+        const info = this._getLightById(this.selectedLightId);
+        if (info && info.type === 'directional') {
+          target = info.marker;
+          mode = 'translate';
+        }
+      } else if (this.selectedHotspotId && this.hotspots[this.selectedHotspotId]) {
+        target = this.hotspots[this.selectedHotspotId];
+        mode = this.gizmoMode;
+      }
+    }
+
+    if (target) {
+      this.transformControls.attach(target);
+      this.transformControls.setMode(mode);
       this.transformHelper.visible = true;
     } else {
       this.transformControls.detach();
@@ -1977,6 +2318,226 @@ export class Hotspot3DViewer {
     const visible = (this.currentMode === 'edit');
     if (this.axesHelper) this.axesHelper.visible = visible;
     if (this.lightHelper) this.lightHelper.visible = visible;
+    Object.values(this.lightMarkers).forEach((m) => { if (m) m.visible = visible; });
+    if (!visible) this._selectLight(null, { notify: false });
+  }
+
+  _createLightMarkers() {
+    const makeMarker = (colorHex) => {
+      const geom = new THREE.SphereGeometry(0.06, 12, 12);
+      const mat = new THREE.MeshBasicMaterial({ color: colorHex, depthTest: false });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.renderOrder = 3;
+      mesh.visible = false;
+      return mesh;
+    };
+
+    if (this.dirLight) {
+      const base = this.dirLight.color.getHex();
+      const marker = makeMarker(base);
+      marker.position.copy(this.dirLight.position);
+      marker.userData.lightId = 'directional';
+      marker.userData.baseColor = base;
+      this.scene.add(marker);
+      this.lightMarkers.directional = marker;
+    }
+
+    if (this.ambientLight) {
+      const base = this.ambientLight.color.getHex();
+      const marker = makeMarker(base);
+      marker.position.set(0, 2, 0);
+      marker.userData.lightId = 'ambient';
+      marker.userData.baseColor = base;
+      this.scene.add(marker);
+      this.lightMarkers.ambient = marker;
+    }
+  }
+
+  _getLightById(id) {
+    if (id === 'directional') return { type: 'directional', light: this.dirLight, marker: this.lightMarkers.directional };
+    if (id === 'ambient') return { type: 'ambient', light: this.ambientLight, marker: this.lightMarkers.ambient };
+    return null;
+  }
+
+  _getLightMarkers() {
+    return Object.values(this.lightMarkers).filter((m) => !!m && m.visible);
+  }
+
+  _selectLight(id, { notify = true, clearHotspot = true } = {}) {
+    if (this.selectedLightId && this.lightMarkers[this.selectedLightId]) {
+      const prev = this.lightMarkers[this.selectedLightId];
+      const baseHex = prev.userData?.baseColor ?? 0xffffff;
+      prev.material.color.set(baseHex);
+    }
+
+    if (clearHotspot && this.selectedHotspotId) {
+      this._selectHotspot(null, { notify: false });
+    }
+
+    if (!id || !this.lightMarkers[id]) {
+      this.selectedLightId = null;
+      this._hideLightUI();
+      this._updateTransformControls();
+      if (notify) this._emit({ type: 'onLightSelected', payload: { Id: null } });
+      return;
+    }
+
+    const marker = this.lightMarkers[id];
+    marker.material.color.set(LIGHT_SELECTED_COLOR);
+    this.selectedLightId = id;
+    this._updateTransformControls();
+    this._showLightUIFor(id);
+    if (notify) this._emit({ type: 'onLightSelected', payload: { Id: id } });
+  }
+
+  _showLightUIFor(type) {
+    if (!this.lightUI) return;
+    this._hideUI();
+    this.lightUI.root.style.display = 'block';
+    this._updateLightUIFromLight(type);
+  }
+
+  _hideLightUI() {
+    if (!this.lightUI) return;
+    this.lightUI.root.style.display = 'none';
+  }
+
+  _isLightUIOpen() {
+    return !!(this.lightUI && this.lightUI.root && this.lightUI.root.style.display !== 'none');
+  }
+
+  _updateLightMarkerColor(type) {
+    const info = this._getLightById(type);
+    if (!info || !info.marker || !info.light) return;
+    const baseHex = info.light.color.getHex();
+    info.marker.userData.baseColor = baseHex;
+    if (this.selectedLightId !== type) {
+      info.marker.material.color.set(baseHex);
+    }
+  }
+
+  _updateLightPowerUI(type) {
+    if (!this.lightUI?.powerTrack || !this.lightUI?.powerThumb || !this.lightUI?.powerToggle) return;
+    const info = this._getLightById(type);
+    if (!info || !info.light) return;
+    const isOn = (info.light.intensity ?? 0) > 0.0001;
+    this.lightUI.powerToggle.checked = isOn;
+    if (isOn) {
+      this.lightUI.powerTrack.style.background = '#8fe39a';
+      this.lightUI.powerTrack.style.borderColor = '#58b965';
+      this.lightUI.powerThumb.style.transform = 'translateX(20px)';
+    } else {
+      this.lightUI.powerTrack.style.background = '#ddd';
+      this.lightUI.powerTrack.style.borderColor = '#00000030';
+      this.lightUI.powerThumb.style.transform = 'translateX(0)';
+    }
+  }
+
+  _updateLightUIFromLight(type) {
+    if (!this.lightUI) return;
+    const info = this._getLightById(type);
+    if (!info || !info.light) return;
+
+    const light = info.light;
+    const label = (type === 'directional') ? 'Directional' : 'Ambient';
+    this.lightUI.title.textContent = `Light (${label})`;
+    this.lightUI.type.textContent = `Type: ${label}`;
+    this.lightUI.color.value = `#${light.color.getHexString()}`;
+
+    const intensity = Number.isFinite(light.intensity) ? light.intensity : 0;
+    this.lightUI.intensity.slider.value = String(intensity);
+    this.lightUI.intensity.label.textContent = intensity.toFixed(2);
+    this._updateLightPowerUI(type);
+
+    if (type === 'directional') {
+      if (this.lightUI.gizmoRow) this.lightUI.gizmoRow.style.display = 'flex';
+      this.lightUI.pos.block.style.display = 'block';
+      if (info.marker) info.marker.position.copy(light.position);
+      this.lightUI.pos.x.value = light.position.x.toFixed(3);
+      this.lightUI.pos.y.value = light.position.y.toFixed(3);
+      this.lightUI.pos.z.value = light.position.z.toFixed(3);
+    } else {
+      if (this.lightUI.gizmoRow) this.lightUI.gizmoRow.style.display = 'none';
+      this.lightUI.pos.block.style.display = 'none';
+    }
+  }
+
+  _toggleLightPower() {
+    if (!this.selectedLightId) return;
+    const info = this._getLightById(this.selectedLightId);
+    if (!info || !info.light) return;
+
+    const light = info.light;
+    const current = Number.isFinite(light.intensity) ? light.intensity : 0;
+    if (current > 0.0001) {
+      light.userData = light.userData || {};
+      light.userData.prevIntensity = current;
+      light.intensity = 0;
+    } else {
+      const prev = Number.isFinite(light.userData?.prevIntensity) ? light.userData.prevIntensity : 0.8;
+      light.intensity = prev;
+    }
+    this._updateLightUIFromLight(info.type);
+  }
+
+  _applyLightFromUI() {
+    if (!this.lightUI || !this.selectedLightId) return;
+    const info = this._getLightById(this.selectedLightId);
+    if (!info || !info.light) return;
+
+    try {
+      const c = new THREE.Color(this.lightUI.color.value);
+      info.light.color.set(c);
+    } catch { }
+
+    const intensity = parseFloat(this.lightUI.intensity.slider.value);
+    if (Number.isFinite(intensity)) {
+      info.light.intensity = Math.min(Math.max(intensity, 0), 3);
+    }
+
+    if (info.type === 'directional' && this.lightHelper) this.lightHelper.update();
+    this._updateLightMarkerColor(info.type);
+    this._updateLightUIFromLight(info.type);
+  }
+
+  _applyEnvMapIntensityToModel(value) {
+    if (!this.model) return;
+    const v = Math.min(Math.max(Number(value), 0), 3);
+    this.model.traverse((obj) => {
+      if (!obj || !obj.isMesh) return;
+      const mat = obj.material;
+      if (Array.isArray(mat)) {
+        mat.forEach((m) => {
+          if (m && 'envMapIntensity' in m) {
+            m.envMapIntensity = v;
+            m.needsUpdate = true;
+          }
+        });
+      } else if (mat && 'envMapIntensity' in mat) {
+        mat.envMapIntensity = v;
+        mat.needsUpdate = true;
+      }
+    });
+  }
+
+  _applyEmissiveIntensityToModel(value) {
+    if (!this.model) return;
+    const v = Math.min(Math.max(Number(value), 0), 3);
+    this.model.traverse((obj) => {
+      if (!obj || !obj.isMesh) return;
+      const mat = obj.material;
+      if (Array.isArray(mat)) {
+        mat.forEach((m) => {
+          if (m && 'emissiveIntensity' in m) {
+            m.emissiveIntensity = v;
+            m.needsUpdate = true;
+          }
+        });
+      } else if (mat && 'emissiveIntensity' in mat) {
+        mat.emissiveIntensity = v;
+        mat.needsUpdate = true;
+      }
+    });
   }
 
   _updateHotspotVisibility() {

@@ -35,9 +35,8 @@ const $panoramaName = document.getElementById('panoramaName');
 const $btnPanorama = document.getElementById('btn-panorama');
 const $panoramaPreset = document.getElementById('panoramaPreset');
 
-// nuovi riferimenti per light intensity
-const $lightIntensity = document.getElementById('lightIntensity');
-const $lightIntensityLabel = document.getElementById('lightIntensityLabel');
+const $exposure = document.getElementById('exposure');
+const $exposureLabel = document.getElementById('exposureLabel');
 
 function now() { return new Date().toLocaleTimeString(); }
 function render(note = '') {
@@ -204,10 +203,6 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       return;
     }
 
-    if (type === 'onLightChanged') {
-      render(`lightIntensity=${payload?.intensity ?? 'n/a'}`);
-      return;
-    }
   }
 });
 
@@ -215,12 +210,12 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
 viewer.init(shared);
 pushMessage('Pronto');
 
-// applica lightIntensity iniziale
-if ($lightIntensity) {
-  const initVal = parseFloat($lightIntensity.value);
+// applica exposure iniziale
+if ($exposure) {
+  const initVal = parseFloat($exposure.value);
   if (Number.isFinite(initVal)) {
-    viewer.setLightIntensity(initVal);
-    if ($lightIntensityLabel) $lightIntensityLabel.textContent = initVal.toFixed(2);
+    viewer.setExposure(initVal);
+    if ($exposureLabel) $exposureLabel.textContent = initVal.toFixed(2);
   }
 }
 
@@ -337,12 +332,12 @@ $btnPanorama?.addEventListener('click', () => {
   pushMessage(`Richiesto panorama 360: ${url}`);
 });
 
-// Light intensity slider -> viewer.setLightIntensity
-$lightIntensity?.addEventListener('input', () => {
-  const v = parseFloat($lightIntensity.value);
+// Exposure slider -> viewer.setExposure
+$exposure?.addEventListener('input', () => {
+  const v = parseFloat($exposure.value);
   if (!Number.isFinite(v)) return;
-  viewer.setLightIntensity(v);
-  if ($lightIntensityLabel) $lightIntensityLabel.textContent = v.toFixed(2);
+  viewer.setExposure(v);
+  if ($exposureLabel) $exposureLabel.textContent = v.toFixed(2);
 });
 
 // Reset (mantiene il modello corrente)
