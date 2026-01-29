@@ -31,16 +31,16 @@ const $btnReset = document.getElementById('btn-reset');
 const $msgBox = document.getElementById('msgBox');
 
 // nuovi riferimenti per panorama
-const $panoramaName   = document.getElementById('panoramaName');
-const $btnPanorama    = document.getElementById('btn-panorama');
+const $panoramaName = document.getElementById('panoramaName');
+const $btnPanorama = document.getElementById('btn-panorama');
 const $panoramaPreset = document.getElementById('panoramaPreset');
 
 // nuovi riferimenti per light intensity
-const $lightIntensity       = document.getElementById('lightIntensity');
-const $lightIntensityLabel  = document.getElementById('lightIntensityLabel');
+const $lightIntensity = document.getElementById('lightIntensity');
+const $lightIntensityLabel = document.getElementById('lightIntensityLabel');
 
 function now() { return new Date().toLocaleTimeString(); }
-function render(note='') {
+function render(note = '') {
   $state.textContent = JSON.stringify(shared, null, 2);
   $modeBadge.textContent = `mode: ${shared.mode}`;
   $meta.textContent = `${now()} — ${note}`;
@@ -122,7 +122,7 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       if (shared.mode === 'view' || shared.mode === 'edit' || shared.mode === 'hide') {
         const id = payload?.Id;
         if (id) pushMessage(`Hotspot selezionato: ${id}`);
-        else    pushMessage('Nessun hotspot selezionato');
+        else pushMessage('Nessun hotspot selezionato');
       }
       return;
     }
@@ -130,13 +130,13 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
     // SYNC_DATA: aggiorna shared ma non tocca l'area messaggi
     if (type === 'SYNC_DATA' && payload) {
       shared = {
-        mode: payload.mode,
-        model3D: payload.model3D,
-        pointOfView: payload.pointOfView,
-        background: payload.background ?? shared.background ?? 'color',
-        backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor ?? '#ffffff',
-        panoimage: payload.panoimage ?? shared.panoimage ?? null,
-        hotspots: payload.hotspots ?? []
+        mode: payload.mode ?? shared.mode,
+        model3D: payload.model3D ?? shared.model3D,
+        pointOfView: payload.pointOfView ?? shared.pointOfView,
+        background: payload.background ?? shared.background,
+        backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor,
+        panoimage: payload.panoimage ?? shared.panoimage,
+        hotspots: payload.hotspots ?? shared.hotspots
       };
       render('SYNC_DATA');
       return;
@@ -159,8 +159,8 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       if (hs) {
         hs.X = payload.X; hs.Y = payload.Y; hs.Z = payload.Z;
         if (payload.shape) hs.shape = payload.shape;
-        if (payload.dims)  hs.dims  = payload.dims;
-        if (payload.rot)   hs.rot   = payload.rot;
+        if (payload.dims) hs.dims = payload.dims;
+        if (payload.rot) hs.rot = payload.rot;
         if (payload.color) hs.color = payload.color;
         if (payload.opacity !== undefined) hs.opacity = payload.opacity;
       }
@@ -245,7 +245,7 @@ document.getElementById('btn-load').addEventListener('click', () => {
     if (u.origin !== window.location.origin) {
       alert('Attenzione: URL di origine diversa. Potresti avere errori CORS se il server non consente l’accesso.');
     }
-  } catch {}
+  } catch { }
 
   shared = {
     mode: 'view',
@@ -327,7 +327,7 @@ $panoramaPreset?.addEventListener('change', () => {
 $btnPanorama?.addEventListener('click', () => {
   const raw = ($panoramaName?.value || '').trim();
   const fileName = raw || PANORAMA_DEFAULT_NAME;
-  const url = `/images/${fileName}`;
+  const url = `./images/${fileName}`;
 
   viewer.setPanorama(url);
   shared.background = 'pano';
@@ -381,7 +381,7 @@ document.getElementById('btn-download').addEventListener('click', downloadJSON);
 // il validatore dovrà validare solo le proprietà presenti
 function validateSharedData(data) {
   const err = (msg) => ({ valid: false, error: msg });
-  const ok  = () => ({ valid: true });
+  const ok = () => ({ valid: true });
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
    // ELS: validazione oggetto, non cambia nulla

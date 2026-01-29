@@ -19,14 +19,14 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-const HOTSPOT_SELECTED_COLOR  = 0xffa500;
+const HOTSPOT_SELECTED_COLOR = 0xffa500;
 const HOTSPOT_HIGHLIGHT_COLOR = 0xff0000;
 
 const DEFAULT_SPHERE_R = 0.05;
-const DEFAULT_BOX      = { x: 0.08, y: 0.08, z: 0.08 };
-const DEFAULT_CYL      = { r: 0.06, h: 0.12 };
-const DEFAULT_BOX_ROT  = { x: 0, y: 0, z: 0 }; // gradi
-const DEFAULT_CYL_ROT  = { x: 0, y: 0, z: 0 }; // gradi
+const DEFAULT_BOX = { x: 0.08, y: 0.08, z: 0.08 };
+const DEFAULT_CYL = { r: 0.06, h: 0.12 };
+const DEFAULT_BOX_ROT = { x: 0, y: 0, z: 0 }; // gradi
+const DEFAULT_CYL_ROT = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_HOTSPOT_HEX = '#00ff00';
 const DEFAULT_MATERIAL = { roughness: 0.4, metalness: 0.1, envMapIntensity: 1.0 };
 
@@ -34,18 +34,18 @@ const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
 const POSITION_STEP = 0.01;
-const ROT_STEP      = 1;    // gradi per click rot
-const SCALE_STEP    = 0.01; // step per scale / raggio
+const ROT_STEP = 1;    // gradi per click rot
+const SCALE_STEP = 0.01; // step per scale / raggio
 
 export class Hotspot3DViewer {
   /**
    * @param {HTMLElement} container
    * @param {{ modelUrl?: string, onEvent?: (msg:{type:string,payload?:any})=>void, background?: number|string }} options
    */
-  constructor(container, { modelUrl = '', onEvent = () => {}, background = 0xf0f0f0 } = {}) {
+  constructor(container, { modelUrl = '', onEvent = () => { }, background = 0xf0f0f0 } = {}) {
     if (!container) throw new Error('Hotspot3DViewer: container mancante');
     this.container = container;
-    this.onEvent = (msg) => { try { onEvent?.(msg); } catch {} };
+    this.onEvent = (msg) => { try { onEvent?.(msg); } catch { } };
 
     // 3D base
     this.scene = null;
@@ -88,9 +88,9 @@ export class Hotspot3DViewer {
     };
     this.modelBounds = {
       min: new THREE.Vector3(-1, -1, -1),
-      max: new THREE.Vector3( 1,  1,  1),
-      center: new THREE.Vector3(0,0,0),
-      size: new THREE.Vector3(2,2,2)
+      max: new THREE.Vector3(1, 1, 1),
+      center: new THREE.Vector3(0, 0, 0),
+      size: new THREE.Vector3(2, 2, 2)
     };
 
     // UI refs
@@ -98,7 +98,7 @@ export class Hotspot3DViewer {
 
     // TransformControls
     this.transformControls = null;
-    this.transformHelper   = null;
+    this.transformHelper = null;
 
     // stato gizmo
     this.gizmoEnabled = false;
@@ -142,7 +142,7 @@ export class Hotspot3DViewer {
       }
       this._recomputeLimitsFromModel();
     }
-    
+
     // POV
     if (pointOfView) {
       this.camera.position.set(pointOfView.X, pointOfView.Y, pointOfView.Z);
@@ -251,7 +251,7 @@ export class Hotspot3DViewer {
   }
 
   setCreationShape(shape) {
-    if (['sphere','box','cylinder'].includes(shape)) this.creationShape = shape;
+    if (['sphere', 'box', 'cylinder'].includes(shape)) this.creationShape = shape;
   }
 
   setBackground(bg) {
@@ -342,11 +342,11 @@ export class Hotspot3DViewer {
   }
 
   highlightHotspot(id) {
-    this._selectHotspot(id, { notify:false, color: HOTSPOT_HIGHLIGHT_COLOR });
+    this._selectHotspot(id, { notify: false, color: HOTSPOT_HIGHLIGHT_COLOR });
   }
 
   getSharedData() { return this._buildSharedData(); }
-  requestSync()    { this._syncAll(); }
+  requestSync() { this._syncAll(); }
 
   /* =============== INTERNAL =============== */
 
@@ -367,7 +367,7 @@ export class Hotspot3DViewer {
     this.renderer.toneMappingExposure = 0.8;
 
     this._updateRendererSize();
-    this.renderer.domElement.style.width  = '100%';
+    this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     this.container.appendChild(this.renderer.domElement);
 
@@ -381,7 +381,7 @@ export class Hotspot3DViewer {
 
     // helper
     this.lightHelper = new THREE.DirectionalLightHelper(this.dirLight, 0.3);
-    this.axesHelper  = new THREE.AxesHelper(1);
+    this.axesHelper = new THREE.AxesHelper(1);
     this.scene.add(this.lightHelper);
     this.scene.add(this.axesHelper);
 
@@ -438,7 +438,7 @@ export class Hotspot3DViewer {
         const sx = mesh.scale.x || 1;
         const sy = mesh.scale.y || 1;
         const sz = mesh.scale.z || 1;
-        const s  = (sx + sy + sz) / 3;
+        const s = (sx + sy + sz) / 3;
         mesh.scale.set(s, s, s);
       }
 
@@ -481,7 +481,7 @@ export class Hotspot3DViewer {
         if (ud.shape === 'sphere') {
           const s = (sx + sy + sz) / 3;
           const newR = (ud.dims?.r || DEFAULT_SPHERE_R) * s;
-          mesh.scale.set(1,1,1);
+          mesh.scale.set(1, 1, 1);
           this._resizeSelectedSphere(newR, true);
           return;
         } else if (ud.shape === 'box') {
@@ -491,7 +491,7 @@ export class Hotspot3DViewer {
             y: base.y * sy,
             z: base.z * sz
           };
-          mesh.scale.set(1,1,1);
+          mesh.scale.set(1, 1, 1);
           this._resizeSelectedBox(dims, true);
           return;
         } else if (ud.shape === 'cylinder') {
@@ -501,7 +501,7 @@ export class Hotspot3DViewer {
             r: base.r * radialS,
             h: base.h * sy
           };
-          mesh.scale.set(1,1,1);
+          mesh.scale.set(1, 1, 1);
           this._resizeSelectedCylinder(dims, true);
           return;
         }
@@ -555,10 +555,17 @@ export class Hotspot3DViewer {
   };
 
   _mountUI() {
+    // ELS: define some const to use during resize
+    const MIN_W = 240;
+    const MAX_W = 420;
+    const MIN_H = 520;
+    const MAX_H = 720;
+
+    // ELS: changed right with left and use MIN_W/MAX_W const to define initial min and max width style
     const root = document.createElement('div');
     Object.assign(root.style, {
-      position: 'absolute', right: '12px', top: '12px', zIndex: '10',
-      minWidth: '220px', maxWidth: '280px',
+      position: 'absolute', left: '12px', top: '12px', zIndex: '10',
+      minWidth: MIN_W + 'px', maxWidth: MAX_W + 'px',
       background: 'rgba(255,255,255,0.9)', color: '#111',
       borderRadius: '10px', padding: '10px 12px',
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
@@ -570,6 +577,9 @@ export class Hotspot3DViewer {
     title.style.fontSize = '14px';
     title.textContent = 'Hotspot';
     root.appendChild(title);
+
+    // ELS: manage resize and drag for popup
+    this._bindDragAndResize(root, title, MIN_W, MIN_H, MAX_W, MAX_H);
 
     // ===== TOP BAR Gizmo + Mode =====
     const topBar = document.createElement('div');
@@ -1163,7 +1173,7 @@ export class Hotspot3DViewer {
       this._syncAll();
     };
 
-    ['x','y','z'].forEach(axis => {
+    ['x', 'y', 'z'].forEach(axis => {
       const uiAxis = this.ui.pos[axis];
 
       uiAxis.input.addEventListener('change', () => applyAxisValue(axis));
@@ -1245,7 +1255,7 @@ export class Hotspot3DViewer {
       this.ui.box.z.input.value = dims.z.toFixed(3);
     };
 
-    ['x','y','z'].forEach(axis => {
+    ['x', 'y', 'z'].forEach(axis => {
       const uiAxis = this.ui.box[axis];
       uiAxis.input.addEventListener('change', applyBoxDims);
       uiAxis.input.addEventListener('keydown', (ev) => {
@@ -1377,7 +1387,7 @@ export class Hotspot3DViewer {
       this._syncAll();
     };
 
-    ['x','y','z'].forEach(axis => {
+    ['x', 'y', 'z'].forEach(axis => {
       const uiAxis = this.ui.rot[axis];
 
       uiAxis.input.addEventListener('change', () => applyRotAxisValue(axis));
@@ -1487,7 +1497,7 @@ export class Hotspot3DViewer {
       this._syncAll();
     };
 
-    ['roughness','metalness','envMapIntensity'].forEach((key) => {
+    ['roughness', 'metalness', 'envMapIntensity'].forEach((key) => {
       const limits = (key === 'envMapIntensity') ? [0, 3] : [0, 1];
       this.ui.material[key].slider.addEventListener('input', () => applyMaterialValue(key, limits[0], limits[1]));
       this.ui.material[key].slider.addEventListener('change', () => applyMaterialValue(key, limits[0], limits[1]));
@@ -1495,6 +1505,209 @@ export class Hotspot3DViewer {
 
     this.container.appendChild(root);
     this._applyLimitsToUI();
+  }
+
+  _bindDragAndResize(root, title, MIN_W, MIN_H, MAX_W, MAX_H) {
+    if (!root || !title) return;
+
+    // ===== DRAG POPUP =====
+    title.style.cursor = 'move';
+    title.style.userSelect = 'none';
+
+    let _dragging = false;
+    let _dragOffsetX = 0;
+    let _dragOffsetY = 0;
+
+    const _getParentRect = () => {
+      const p = root.offsetParent || document.body;
+      return p.getBoundingClientRect();
+    };
+
+    const _onMouseMove = (e) => {
+      if (!_dragging) return;
+
+      const parentRect = _getParentRect();
+
+      // relative position (from container - offsetParent)
+      let x = (e.clientX - parentRect.left) - _dragOffsetX;
+      let y = (e.clientY - parentRect.top) - _dragOffsetY;
+
+      const p = /*root.offsetParent ||*/ document.body;
+      const pw = p.clientWidth || window.innerWidth;
+      const ph = p.clientHeight || window.innerHeight;
+      const rect = root.getBoundingClientRect();
+
+      const maxX = pw - rect.width;
+      const maxY = ph - rect.height;
+      x = Math.max(0, Math.min(maxX, x));
+      y = Math.max(0, Math.min(maxY, y));
+
+      root.style.left = `${x}px`;
+      root.style.top = `${y}px`;
+      root.style.right = 'auto';
+    };
+
+    const _stopDrag = () => {
+      if (!_dragging) return;
+      _dragging = false;
+      document.removeEventListener('mousemove', _onMouseMove);
+      document.removeEventListener('mouseup', _stopDrag);
+    };
+
+    title.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+
+      const parentRect = _getParentRect();
+      const rect = root.getBoundingClientRect();
+
+      // mouse offset 
+      _dragOffsetX = (e.clientX - parentRect.left) - (rect.left - parentRect.left);
+      _dragOffsetY = (e.clientY - parentRect.top) - (rect.top - parentRect.top);
+
+      // init left/top
+      root.style.left = `${rect.left - parentRect.left}px`;
+      root.style.top = `${rect.top - parentRect.top}px`;
+      root.style.right = 'auto';
+
+      _dragging = true;
+      document.addEventListener('mousemove', _onMouseMove);
+      document.addEventListener('mouseup', _stopDrag);
+
+      e.preventDefault();
+    });
+
+    // ==== RESIZE POPUP ====
+    root.style.boxSizing = 'border-box';
+    root.style.width = root.style.width || '260px';
+    root.style.height = root.style.height || 'auto';
+
+    const _makeHandle = (edge) => {
+      const h = document.createElement('div');
+      h.dataset.resize = edge;
+      Object.assign(h.style, {
+        position: 'absolute',
+        zIndex: '20',
+        background: 'transparent',
+        userSelect: 'none',
+      });
+
+      const size = 6;
+
+      if (edge === 'e') {
+        Object.assign(h.style, { top: '0', right: `-${size / 2}px`, width: `${size}px`, height: '100%', cursor: 'ew-resize' });
+      } else if (edge === 'w') {
+        Object.assign(h.style, { top: '0', left: `-${size / 2}px`, width: `${size}px`, height: '100%', cursor: 'ew-resize' });
+      } else if (edge === 's') {
+        Object.assign(h.style, { left: '0', bottom: `-${size / 2}px`, height: `${size}px`, width: '100%', cursor: 'ns-resize' });
+      } else if (edge === 'n') {
+        Object.assign(h.style, { left: '0', top: `-${size / 2}px`, height: `${size}px`, width: '100%', cursor: 'ns-resize' });
+      }
+
+      return h;
+    };
+
+    ['n', 's', 'e', 'w'].forEach(edge => root.appendChild(_makeHandle(edge)));
+
+    let _resizing = false;
+    let _resizeEdge = null;
+    let _startX = 0;
+    let _startY = 0;
+    let _startLeft = 0;
+    let _startTop = 0;
+    let _startW = 0;
+    let _startH = 0;
+
+    const _startResize = (e, edge) => {
+      if (e.button !== 0) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const parentRect = _getParentRect();
+      const rect = root.getBoundingClientRect();
+
+      // synch left/top
+      const left = rect.left - parentRect.left;
+      const top = rect.top - parentRect.top;
+
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+      root.style.right = 'auto';
+
+      // if height is "auto", calculate current height
+      const computed = getComputedStyle(root);
+      if (computed.height === 'auto') {
+        root.style.height = `${rect.height}px`;
+      }
+
+      _resizing = true;
+      _resizeEdge = edge;
+
+      _startX = e.clientX;
+      _startY = e.clientY;
+
+      _startLeft = left;
+      _startTop = top;
+      _startW = rect.width;
+      _startH = rect.height;
+
+      document.addEventListener('mousemove', _onResizeMove);
+      document.addEventListener('mouseup', _stopResize);
+    };
+
+    const _onResizeMove = (e) => {
+      if (!_resizing) return;
+
+      const dx = e.clientX - _startX;
+      const dy = e.clientY - _startY;
+
+      let newLeft = _startLeft;
+      let newTop = _startTop;
+      let newW = _startW;
+      let newH = _startH;
+
+      if (_resizeEdge === 'e') {
+        newW = _startW + dx;
+      } else if (_resizeEdge === 'w') {
+        newW = _startW - dx;
+        newLeft = _startLeft + dx;
+      } else if (_resizeEdge === 's') {
+        newH = _startH + dy;
+      } else if (_resizeEdge === 'n') {
+        newH = _startH - dy;
+        newTop = _startTop + dy;
+      }
+
+      newW = Math.max(MIN_W, Math.min(MAX_W, newW));
+      newH = Math.max(MIN_H, Math.min(MAX_H, newH));
+
+      // resize W/N, set left/top
+      if (_resizeEdge === 'w') {
+        newLeft = _startLeft + (_startW - newW);
+      }
+      if (_resizeEdge === 'n') {
+        newTop = _startTop + (_startH - newH);
+      }
+
+      // apply to style
+      root.style.left = `${newLeft}px`;
+      root.style.top = `${newTop}px`;
+      root.style.width = `${newW}px`;
+      root.style.height = `${newH}px`;
+    };
+
+    const _stopResize = () => {
+      if (!_resizing) return;
+      _resizing = false;
+      _resizeEdge = null;
+      document.removeEventListener('mousemove', _onResizeMove);
+      document.removeEventListener('mouseup', _stopResize);
+    };
+
+    // bind handle events
+    root.querySelectorAll('[data-resize]').forEach(h => {
+      h.addEventListener('mousedown', (e) => _startResize(e, h.dataset.resize));
+    });
   }
 
   _bindEvents() {
@@ -1508,7 +1721,7 @@ export class Hotspot3DViewer {
     dom.addEventListener('mousemove', (e) => {
       const dx = e.clientX - this.dragStart.x;
       const dy = e.clientY - this.dragStart.y;
-      if (Math.sqrt(dx*dx + dy*dy) > 5) this.isDragging = true;
+      if (Math.sqrt(dx * dx + dy * dy) > 5) this.isDragging = true;
     });
 
     dom.addEventListener('mouseup', (e) => {
@@ -1536,10 +1749,10 @@ export class Hotspot3DViewer {
   _buildSharedData() {
     const list = Object.entries(this.hotspots).map(([Id, mesh]) => {
       const shape = mesh.userData?.shape || 'sphere';
-      const dims  = mesh.userData?.dims  || {};
-      const rot   = mesh.userData?.rot;
+      const dims = mesh.userData?.dims || {};
+      const rot = mesh.userData?.rot;
       const colorHex = mesh.userData?.color || DEFAULT_HOTSPOT_HEX;
-      const opacity  = Number.isFinite(mesh.userData?.opacity)
+      const opacity = Number.isFinite(mesh.userData?.opacity)
         ? mesh.userData.opacity
         : (mesh.material.opacity ?? 1);
       const material = normalizeMaterial(mesh.userData?.material ?? {
@@ -1555,12 +1768,12 @@ export class Hotspot3DViewer {
         dims: (shape === 'sphere')
           ? { r: dims?.r ?? DEFAULT_SPHERE_R }
           : (shape === 'box')
-          ? {
+            ? {
               x: dims?.x ?? DEFAULT_BOX.x,
               y: dims?.y ?? DEFAULT_BOX.y,
               z: dims?.z ?? DEFAULT_BOX.z
             }
-          : {
+            : {
               r: dims?.r ?? DEFAULT_CYL.r,
               h: dims?.h ?? DEFAULT_CYL.h
             },
@@ -1662,7 +1875,7 @@ export class Hotspot3DViewer {
     dims = this._clampDimsToLimits(shape, dims);
 
     const colorHex = DEFAULT_HOTSPOT_HEX;
-    const opacity  = 1.0;
+    const opacity = 1.0;
     const material = normalizeMaterial();
 
     const mesh = this._createHotspot(newId, point, shape, dims, rot, colorHex, opacity, material);
@@ -1762,7 +1975,7 @@ export class Hotspot3DViewer {
 
   _updateHelpersVisibility() {
     const visible = (this.currentMode === 'edit');
-    if (this.axesHelper)  this.axesHelper.visible  = visible;
+    if (this.axesHelper) this.axesHelper.visible = visible;
     if (this.lightHelper) this.lightHelper.visible = visible;
   }
 
@@ -1873,11 +2086,11 @@ export class Hotspot3DViewer {
 
     this._applyLimitsToUI();
 
-    this.ui.pos.block.style.display    = 'block';
+    this.ui.pos.block.style.display = 'block';
     this.ui.sphere.block.style.display = 'none';
-    this.ui.box.block.style.display    = 'none';
-    this.ui.cyl.block.style.display    = 'none';
-    this.ui.rot.block.style.display    = 'none';
+    this.ui.box.block.style.display = 'none';
+    this.ui.cyl.block.style.display = 'none';
+    this.ui.rot.block.style.display = 'none';
 
     this._updatePosFieldsFromMesh(mesh);
 
@@ -2099,9 +2312,9 @@ export class Hotspot3DViewer {
       this.modelLimits.maxCylinder = { r: 0.6, h: 1.0 };
 
       this.modelBounds.min.set(-1, -1, -1);
-      this.modelBounds.max.set( 1,  1,  1);
-      this.modelBounds.center.set(0,0,0);
-      this.modelBounds.size.set(2,2,2);
+      this.modelBounds.max.set(1, 1, 1);
+      this.modelBounds.center.set(0, 0, 0);
+      this.modelBounds.size.set(2, 2, 2);
 
       this._applyLimitsToUI();
       return;
