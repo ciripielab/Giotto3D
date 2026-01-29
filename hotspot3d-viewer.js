@@ -122,20 +122,27 @@ export class Hotspot3DViewer {
 
   init(sharedData) {
     const { mode, model3D, pointOfView, hotspots = [] } = sharedData || {};
-    this.setMode(mode);
 
-    // modello
-    if (typeof model3D === 'string') {
-      if (model3D) {
-        if (model3D !== this.currentModelUrl) this.loadModel(model3D);
-      } else {
-        this.pendingModelUrl = '';
-        this.currentModelUrl = '';
-        this._removeModel();
-      }
+    // ELS: se non esiste mode non facciamo niente
+    if (mode != null) {
+      this.setMode(mode);
     }
-    this._recomputeLimitsFromModel();
 
+    // ELS: se non esiste model3D non facciamo niente
+    if (model3D != null) {
+      // modello
+      if (typeof model3D === 'string') {
+        if (model3D) {
+          if (model3D !== this.currentModelUrl) this.loadModel(model3D);
+        } else {
+          this.pendingModelUrl = '';
+          this.currentModelUrl = '';
+          this._removeModel();
+        }
+      }
+      this._recomputeLimitsFromModel();
+    }
+    
     // POV
     if (pointOfView) {
       this.camera.position.set(pointOfView.X, pointOfView.Y, pointOfView.Z);
@@ -146,54 +153,57 @@ export class Hotspot3DViewer {
       });
     }
 
-    // Hotspot
-    this._clearHotspots();
-    for (const h of hotspots) {
-      const shape = ['sphere','box','cylinder'].includes(h.shape) ? h.shape : 'sphere';
+    // ELS: se non esiste hotspots non facciamo niente
+    if (hotspots != null) {
+      // Hotspot
+      this._clearHotspots();
+      for (const h of hotspots) {
+        const shape = ['sphere', 'box', 'cylinder'].includes(h.shape) ? h.shape : 'sphere';
 
-      let dims;
-      if (shape === 'sphere') {
-        dims = { r: (h.dims?.r ?? DEFAULT_SPHERE_R) };
-      } else if (shape === 'box') {
-        dims = {
-          x: (h.dims?.x ?? DEFAULT_BOX.x),
-          y: (h.dims?.y ?? DEFAULT_BOX.y),
-          z: (h.dims?.z ?? DEFAULT_BOX.z)
-        };
-      } else {
-        dims = {
-          r: (h.dims?.r ?? DEFAULT_CYL.r),
-          h: (h.dims?.h ?? DEFAULT_CYL.h)
-        };
+        let dims;
+        if (shape === 'sphere') {
+          dims = { r: (h.dims?.r ?? DEFAULT_SPHERE_R) };
+        } else if (shape === 'box') {
+          dims = {
+            x: (h.dims?.x ?? DEFAULT_BOX.x),
+            y: (h.dims?.y ?? DEFAULT_BOX.y),
+            z: (h.dims?.z ?? DEFAULT_BOX.z)
+          };
+        } else {
+          dims = {
+            r: (h.dims?.r ?? DEFAULT_CYL.r),
+            h: (h.dims?.h ?? DEFAULT_CYL.h)
+          };
+        }
+        dims = this._clampDimsToLimits(shape, dims);
+
+        const num = (v, dflt) => Number.isFinite(v) ? v : dflt;
+
+        const rot = (shape === 'box')
+          ? { x: num(h.rot?.x, DEFAULT_BOX_ROT.x), y: num(h.rot?.y, DEFAULT_BOX_ROT.y), z: num(h.rot?.z, DEFAULT_BOX_ROT.z) }
+          : (shape === 'cylinder')
+            ? { x: num(h.rot?.x, DEFAULT_CYL_ROT.x), y: num(h.rot?.y, DEFAULT_CYL_ROT.y), z: num(h.rot?.z, DEFAULT_CYL_ROT.z) }
+            : undefined;
+
+        const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
+        const opacity = Number.isFinite(h.opacity) ? Math.min(Math.max(h.opacity, 0), 1) : 1;
+
+        const mesh = this._createHotspot(
+          h.Id,
+          { x: h.X, y: h.Y, z: h.Z },
+          shape,
+          dims,
+          rot,
+          colorHex,
+          opacity
+        );
+        this.scene.add(mesh);
+        this.hotspots[h.Id] = mesh;
       }
-      dims = this._clampDimsToLimits(shape, dims);
-
-      const num = (v, dflt) => Number.isFinite(v) ? v : dflt;
-
-      const rot = (shape === 'box')
-        ? { x: num(h.rot?.x, DEFAULT_BOX_ROT.x), y: num(h.rot?.y, DEFAULT_BOX_ROT.y), z: num(h.rot?.z, DEFAULT_BOX_ROT.z) }
-        : (shape === 'cylinder')
-        ? { x: num(h.rot?.x, DEFAULT_CYL_ROT.x), y: num(h.rot?.y, DEFAULT_CYL_ROT.y), z: num(h.rot?.z, DEFAULT_CYL_ROT.z) }
-        : undefined;
-
-      const colorHex = normalizeHex(h.color) ?? DEFAULT_HOTSPOT_HEX;
-      const opacity  = Number.isFinite(h.opacity) ? Math.min(Math.max(h.opacity, 0), 1) : 1;
-      const material = normalizeMaterial(h.material);
-
-      const mesh = this._createHotspot(
-        h.Id,
-        { x: h.X, y: h.Y, z: h.Z },
-        shape,
-        dims,
-        rot,
-        colorHex,
-        opacity,
-        material
-      );
-      this.scene.add(mesh);
-      this.hotspots[h.Id] = mesh;
     }
 
+    // ELS: la selezione dell'hotspot la lascio fuori dal check, 
+    // però forse potrebbe essere opportuno cambiare selezione solo se il json importato ha modificato hotsposts 
     if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
     else this._selectHotspot(null, { notify: false });
 
