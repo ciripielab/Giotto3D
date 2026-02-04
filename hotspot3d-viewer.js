@@ -22,6 +22,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 const HOTSPOT_SELECTED_COLOR = 0xffa500;
 const HOTSPOT_HIGHLIGHT_COLOR = 0xff0000;
 const LIGHT_SELECTED_COLOR = 0x00b7ff;
+const LIGHT_MARKER_COLOR = 0xffff00;
 
 const DEFAULT_SPHERE_R = 0.05;
 const DEFAULT_BOX = { x: 0.08, y: 0.08, z: 0.08 };
@@ -58,6 +59,7 @@ export class Hotspot3DViewer {
     // luci
     this.ambientLight = null;
     this.dirLight = null;
+    this.pointLight = null;
     this.axesHelper = null;
     this.lightHelper = null;
     this.lightMarkers = {};
@@ -420,6 +422,10 @@ export class Hotspot3DViewer {
     this.dirLight.position.set(2, 5, 2);
     this.scene.add(this.dirLight);
 
+    this.pointLight = new THREE.PointLight(0xffffff, 0);
+    this.pointLight.userData = { autoPosition: true };
+    this.scene.add(this.pointLight);
+
     // helper
     this.lightHelper = new THREE.DirectionalLightHelper(this.dirLight, 0.3);
     this.axesHelper = new THREE.AxesHelper(1);
@@ -428,6 +434,7 @@ export class Hotspot3DViewer {
 
     // light markers (clickable in Edit mode)
     this._createLightMarkers();
+    this._applyPointLightAutoPosition();
 
     this._updateHelpersVisibility();
 
@@ -476,9 +483,13 @@ export class Hotspot3DViewer {
       if (this.selectedLightId) {
         const info = this._getLightById(this.selectedLightId);
         if (!info) return;
-        if (info.type === 'directional') {
+        if (info.type === 'directional' || info.type === 'point') {
           info.light.position.copy(info.marker.position);
-          if (this.lightHelper) this.lightHelper.update();
+          if (info.type === 'point') {
+            info.light.userData = info.light.userData || {};
+            info.light.userData.autoPosition = false;
+          }
+          if (this.lightHelper && info.type === 'directional') this.lightHelper.update();
           this._updateLightUIFromLight(info.type);
         }
         return;
@@ -523,9 +534,13 @@ export class Hotspot3DViewer {
       if (this.selectedLightId) {
         const info = this._getLightById(this.selectedLightId);
         if (!info) return;
-        if (info.type === 'directional') {
+        if (info.type === 'directional' || info.type === 'point') {
           info.light.position.copy(info.marker.position);
-          if (this.lightHelper) this.lightHelper.update();
+          if (info.type === 'point') {
+            info.light.userData = info.light.userData || {};
+            info.light.userData.autoPosition = false;
+          }
+          if (this.lightHelper && info.type === 'directional') this.lightHelper.update();
           this._updateLightUIFromLight(info.type);
         }
         return;
@@ -2294,7 +2309,7 @@ export class Hotspot3DViewer {
     if (this.currentMode === 'edit' && this.gizmoEnabled) {
       if (this.selectedLightId) {
         const info = this._getLightById(this.selectedLightId);
-        if (info && info.type === 'directional') {
+        if (info && (info.type === 'directional' || info.type === 'point')) {
           target = info.marker;
           mode = 'translate';
         }
@@ -2323,9 +2338,9 @@ export class Hotspot3DViewer {
   }
 
   _createLightMarkers() {
-    const makeMarker = (colorHex) => {
-      const geom = new THREE.SphereGeometry(0.06, 12, 12);
-      const mat = new THREE.MeshBasicMaterial({ color: colorHex, depthTest: false });
+    const makeMarker = () => {
+      const geom = new THREE.SphereGeometry(0.08, 12, 12);
+      const mat = new THREE.MeshBasicMaterial({ color: LIGHT_MARKER_COLOR, depthTest: false });
       const mesh = new THREE.Mesh(geom, mat);
       mesh.renderOrder = 3;
       mesh.visible = false;
@@ -2333,8 +2348,8 @@ export class Hotspot3DViewer {
     };
 
     if (this.dirLight) {
-      const base = this.dirLight.color.getHex();
-      const marker = makeMarker(base);
+      const base = LIGHT_MARKER_COLOR;
+      const marker = makeMarker();
       marker.position.copy(this.dirLight.position);
       marker.userData.lightId = 'directional';
       marker.userData.baseColor = base;
@@ -2343,19 +2358,30 @@ export class Hotspot3DViewer {
     }
 
     if (this.ambientLight) {
-      const base = this.ambientLight.color.getHex();
-      const marker = makeMarker(base);
+      const base = LIGHT_MARKER_COLOR;
+      const marker = makeMarker();
       marker.position.set(0, 2, 0);
       marker.userData.lightId = 'ambient';
       marker.userData.baseColor = base;
       this.scene.add(marker);
       this.lightMarkers.ambient = marker;
     }
+
+    if (this.pointLight) {
+      const base = LIGHT_MARKER_COLOR;
+      const marker = makeMarker();
+      marker.position.copy(this.pointLight.position);
+      marker.userData.lightId = 'point';
+      marker.userData.baseColor = base;
+      this.scene.add(marker);
+      this.lightMarkers.point = marker;
+    }
   }
 
   _getLightById(id) {
     if (id === 'directional') return { type: 'directional', light: this.dirLight, marker: this.lightMarkers.directional };
     if (id === 'ambient') return { type: 'ambient', light: this.ambientLight, marker: this.lightMarkers.ambient };
+    if (id === 'point') return { type: 'point', light: this.pointLight, marker: this.lightMarkers.point };
     return null;
   }
 
@@ -2409,7 +2435,7 @@ export class Hotspot3DViewer {
   _updateLightMarkerColor(type) {
     const info = this._getLightById(type);
     if (!info || !info.marker || !info.light) return;
-    const baseHex = info.light.color.getHex();
+    const baseHex = LIGHT_MARKER_COLOR;
     info.marker.userData.baseColor = baseHex;
     if (this.selectedLightId !== type) {
       info.marker.material.color.set(baseHex);
@@ -2439,7 +2465,9 @@ export class Hotspot3DViewer {
     if (!info || !info.light) return;
 
     const light = info.light;
-    const label = (type === 'directional') ? 'Directional' : 'Ambient';
+    const label = (type === 'directional')
+      ? 'Directional'
+      : (type === 'point') ? 'Point' : 'Ambient';
     this.lightUI.title.textContent = `Light (${label})`;
     this.lightUI.type.textContent = `Type: ${label}`;
     this.lightUI.color.value = `#${light.color.getHexString()}`;
@@ -2449,7 +2477,7 @@ export class Hotspot3DViewer {
     this.lightUI.intensity.label.textContent = intensity.toFixed(2);
     this._updateLightPowerUI(type);
 
-    if (type === 'directional') {
+    if (type === 'directional' || type === 'point') {
       if (this.lightUI.gizmoRow) this.lightUI.gizmoRow.style.display = 'flex';
       this.lightUI.pos.block.style.display = 'block';
       if (info.marker) info.marker.position.copy(light.position);
@@ -2866,6 +2894,24 @@ export class Hotspot3DViewer {
 
   /* ===== limiti dinamici dal modello ===== */
 
+  _getPointLightAutoPosition() {
+    const size = this.modelBounds?.size || new THREE.Vector3(2, 2, 2);
+    const maxY = this.modelBounds?.max?.y ?? 1;
+    const y = maxY + Math.max(size.y, 0.1) * 0.5;
+    return new THREE.Vector3(0, y, 0);
+  }
+
+  _applyPointLightAutoPosition() {
+    if (!this.pointLight) return;
+    const auto = this.pointLight.userData?.autoPosition !== false;
+    if (!auto) return;
+    const pos = this._getPointLightAutoPosition();
+    this.pointLight.position.copy(pos);
+    if (this.lightMarkers.point) {
+      this.lightMarkers.point.position.copy(pos);
+    }
+  }
+
   _recomputeLimitsFromModel() {
     if (!this.model) {
       this.modelLimits.maxSphereR = 0.6;
@@ -2878,6 +2924,7 @@ export class Hotspot3DViewer {
       this.modelBounds.size.set(2, 2, 2);
 
       this._applyLimitsToUI();
+      this._applyPointLightAutoPosition();
       return;
     }
 
@@ -2908,6 +2955,7 @@ export class Hotspot3DViewer {
     this.modelBounds.size.copy(size);
 
     this._applyLimitsToUI();
+    this._applyPointLightAutoPosition();
   }
 
   _applyLimitsToUI() {
