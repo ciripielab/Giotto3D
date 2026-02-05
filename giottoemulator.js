@@ -37,6 +37,7 @@ const $panoramaPreset = document.getElementById('panoramaPreset');
 
 const $exposure = document.getElementById('exposure');
 const $exposureLabel = document.getElementById('exposureLabel');
+const $btnAddPointLight = document.getElementById('btn-add-point-light');
 
 function now() { return new Date().toLocaleTimeString(); }
 function render(note = '') {
@@ -330,6 +331,13 @@ $btnPanorama?.addEventListener('click', () => {
   shared.backgroundcolor = null;
   render(`setPanorama(360: ${fileName})`);
   pushMessage(`Richiesto panorama 360: ${url}`);
+});
+
+// Add positional (point) light
+$btnAddPointLight?.addEventListener('click', () => {
+  const id = viewer.addPointLight?.({ select: true });
+  render('addPointLight');
+  pushMessage(`Positional light aggiunta${id ? `: ${id}` : ''}`);
 });
 
 // Exposure slider -> viewer.setExposure

@@ -59,7 +59,8 @@ export class Hotspot3DViewer {
     // luci
     this.ambientLight = null;
     this.dirLight = null;
-    this.pointLight = null;
+    this.pointLights = {};
+    this.pointLightCounter = 0;
     this.axesHelper = null;
     this.lightHelper = null;
     this.lightMarkers = {};
@@ -384,6 +385,13 @@ export class Hotspot3DViewer {
     this.renderer.toneMappingExposure = clamped;
   }
 
+  addPointLight({ select = true } = {}) {
+    const id = this._createPointLight({ autoPosition: true, intensity: 0.8 });
+    if (select && id) this._selectLight(id);
+    this._updateHelpersVisibility();
+    return id;
+  }
+
   highlightHotspot(id) {
     this._selectHotspot(id, { notify: false, color: HOTSPOT_HIGHLIGHT_COLOR });
   }
@@ -420,11 +428,10 @@ export class Hotspot3DViewer {
 
     this.dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
     this.dirLight.position.set(2, 5, 2);
+    this.dirLight.userData = { autoPosition: true };
     this.scene.add(this.dirLight);
 
-    this.pointLight = new THREE.PointLight(0xffffff, 0);
-    this.pointLight.userData = { autoPosition: true };
-    this.scene.add(this.pointLight);
+    // point lights are added on demand from UI
 
     // helper
     this.lightHelper = new THREE.DirectionalLightHelper(this.dirLight, 0.3);
@@ -434,7 +441,9 @@ export class Hotspot3DViewer {
 
     // light markers (clickable in Edit mode)
     this._createLightMarkers();
+    this._applyDirectionalLightAutoPosition();
     this._applyPointLightAutoPosition();
+    this._applyAmbientLightMarkerPosition();
 
     this._updateHelpersVisibility();
 
@@ -485,12 +494,10 @@ export class Hotspot3DViewer {
         if (!info) return;
         if (info.type === 'directional' || info.type === 'point') {
           info.light.position.copy(info.marker.position);
-          if (info.type === 'point') {
-            info.light.userData = info.light.userData || {};
-            info.light.userData.autoPosition = false;
-          }
+          info.light.userData = info.light.userData || {};
+          info.light.userData.autoPosition = false;
           if (this.lightHelper && info.type === 'directional') this.lightHelper.update();
-          this._updateLightUIFromLight(info.type);
+          this._updateLightUIFromLight(this.selectedLightId);
         }
         return;
       }
@@ -536,12 +543,10 @@ export class Hotspot3DViewer {
         if (!info) return;
         if (info.type === 'directional' || info.type === 'point') {
           info.light.position.copy(info.marker.position);
-          if (info.type === 'point') {
-            info.light.userData = info.light.userData || {};
-            info.light.userData.autoPosition = false;
-          }
+          info.light.userData = info.light.userData || {};
+          info.light.userData.autoPosition = false;
           if (this.lightHelper && info.type === 'directional') this.lightHelper.update();
-          this._updateLightUIFromLight(info.type);
+          this._updateLightUIFromLight(this.selectedLightId);
         }
         return;
       }
@@ -1786,8 +1791,18 @@ export class Hotspot3DViewer {
     const lightActions = document.createElement('div');
     Object.assign(lightActions.style, {
       display: 'flex',
-      justifyContent: 'flex-end',
+      justifyContent: 'space-between',
       marginTop: '8px'
+    });
+    const lightDelete = document.createElement('button');
+    lightDelete.textContent = 'Delete';
+    Object.assign(lightDelete.style, {
+      padding: '.35rem .6rem',
+      border: '1px solid #ff8a8a',
+      background: '#ffe6e6',
+      borderRadius: '.5rem',
+      cursor: 'pointer',
+      fontSize: '12px'
     });
     const lightClose = document.createElement('button');
     lightClose.textContent = 'Close';
@@ -1799,11 +1814,13 @@ export class Hotspot3DViewer {
       cursor: 'pointer',
       fontSize: '12px'
     });
+    lightActions.appendChild(lightDelete);
     lightActions.appendChild(lightClose);
     lightRoot.appendChild(lightActions);
 
     lightColorInput.addEventListener('input', () => this._applyLightFromUI());
     intensitySlider.addEventListener('input', () => this._applyLightFromUI());
+    lightDelete.addEventListener('click', () => this._deleteSelectedLight());
     lightClose.addEventListener('click', () => this._selectLight(null));
     lightGizmoBtn.addEventListener('click', () => {
       this.gizmoEnabled = !this.gizmoEnabled;
@@ -1826,6 +1843,7 @@ export class Hotspot3DViewer {
       powerToggle: lightPowerToggle,
       powerTrack: lightPowerTrack,
       powerThumb: lightPowerThumb,
+      btnDelete: lightDelete,
       gizmoRow: lightGizmoRow
     };
 
@@ -2337,19 +2355,76 @@ export class Hotspot3DViewer {
     if (!visible) this._selectLight(null, { notify: false });
   }
 
+  _createPointLight({ color = 0xffffff, intensity = 0, autoPosition = true, position, createMarker = true } = {}) {
+    if (!this.scene) return null;
+    const light = new THREE.PointLight(color, intensity);
+    light.userData = { autoPosition: autoPosition !== false };
+    const id = `point_${++this.pointLightCounter}`;
+    if (position) {
+      light.position.copy(position);
+    } else if (autoPosition) {
+      light.position.copy(this._getPointLightAutoPosition());
+    }
+    this.scene.add(light);
+    this.pointLights[id] = light;
+
+    if (createMarker) {
+      const marker = this._buildLightMarker();
+      marker.position.copy(light.position);
+      marker.userData.lightId = id;
+      marker.userData.baseColor = LIGHT_MARKER_COLOR;
+      this.scene.add(marker);
+      this.lightMarkers[id] = marker;
+    }
+
+    return id;
+  }
+
+  _buildLightMarker() {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, size, size);
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, size * 0.34, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffd700';
+      ctx.fill();
+      ctx.lineWidth = size * 0.08;
+      ctx.strokeStyle = '#b8860b';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(size * 0.5, size * 0.34);
+      ctx.lineTo(size * 0.5, size * 0.66);
+      ctx.moveTo(size * 0.34, size * 0.5);
+      ctx.lineTo(size * 0.66, size * 0.5);
+      ctx.lineWidth = size * 0.06;
+      ctx.strokeStyle = '#5a4a00';
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      color: 0xffffff,
+      depthTest: false,
+      depthWrite: false
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(0.18, 0.18, 1);
+    sprite.renderOrder = 3;
+    sprite.visible = false;
+    return sprite;
+  }
+
   _createLightMarkers() {
-    const makeMarker = () => {
-      const geom = new THREE.SphereGeometry(0.08, 12, 12);
-      const mat = new THREE.MeshBasicMaterial({ color: LIGHT_MARKER_COLOR, depthTest: false });
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.renderOrder = 3;
-      mesh.visible = false;
-      return mesh;
-    };
 
     if (this.dirLight) {
       const base = LIGHT_MARKER_COLOR;
-      const marker = makeMarker();
+      const marker = this._buildLightMarker();
       marker.position.copy(this.dirLight.position);
       marker.userData.lightId = 'directional';
       marker.userData.baseColor = base;
@@ -2359,7 +2434,7 @@ export class Hotspot3DViewer {
 
     if (this.ambientLight) {
       const base = LIGHT_MARKER_COLOR;
-      const marker = makeMarker();
+      const marker = this._buildLightMarker();
       marker.position.set(0, 2, 0);
       marker.userData.lightId = 'ambient';
       marker.userData.baseColor = base;
@@ -2367,21 +2442,25 @@ export class Hotspot3DViewer {
       this.lightMarkers.ambient = marker;
     }
 
-    if (this.pointLight) {
+    Object.entries(this.pointLights).forEach(([id, light]) => {
+      if (!light) return;
+      if (this.lightMarkers[id]) return;
       const base = LIGHT_MARKER_COLOR;
-      const marker = makeMarker();
-      marker.position.copy(this.pointLight.position);
-      marker.userData.lightId = 'point';
+      const marker = this._buildLightMarker();
+      marker.position.copy(light.position);
+      marker.userData.lightId = id;
       marker.userData.baseColor = base;
       this.scene.add(marker);
-      this.lightMarkers.point = marker;
-    }
+      this.lightMarkers[id] = marker;
+    });
   }
 
   _getLightById(id) {
     if (id === 'directional') return { type: 'directional', light: this.dirLight, marker: this.lightMarkers.directional };
     if (id === 'ambient') return { type: 'ambient', light: this.ambientLight, marker: this.lightMarkers.ambient };
-    if (id === 'point') return { type: 'point', light: this.pointLight, marker: this.lightMarkers.point };
+    if (id && id.startsWith('point_')) {
+      return { type: 'point', id, light: this.pointLights[id], marker: this.lightMarkers[id] };
+    }
     return null;
   }
 
@@ -2432,19 +2511,19 @@ export class Hotspot3DViewer {
     return !!(this.lightUI && this.lightUI.root && this.lightUI.root.style.display !== 'none');
   }
 
-  _updateLightMarkerColor(type) {
-    const info = this._getLightById(type);
+  _updateLightMarkerColor(idOrType) {
+    const info = this._getLightById(idOrType);
     if (!info || !info.marker || !info.light) return;
     const baseHex = LIGHT_MARKER_COLOR;
     info.marker.userData.baseColor = baseHex;
-    if (this.selectedLightId !== type) {
+    if (this.selectedLightId !== (info.id || info.type)) {
       info.marker.material.color.set(baseHex);
     }
   }
 
-  _updateLightPowerUI(type) {
+  _updateLightPowerUI(idOrType) {
     if (!this.lightUI?.powerTrack || !this.lightUI?.powerThumb || !this.lightUI?.powerToggle) return;
-    const info = this._getLightById(type);
+    const info = this._getLightById(idOrType);
     if (!info || !info.light) return;
     const isOn = (info.light.intensity ?? 0) > 0.0001;
     this.lightUI.powerToggle.checked = isOn;
@@ -2459,15 +2538,18 @@ export class Hotspot3DViewer {
     }
   }
 
-  _updateLightUIFromLight(type) {
+  _updateLightUIFromLight(idOrType) {
     if (!this.lightUI) return;
-    const info = this._getLightById(type);
+    const info = this._getLightById(idOrType);
     if (!info || !info.light) return;
 
     const light = info.light;
-    const label = (type === 'directional')
+    const kind = info.type;
+    const label = (kind === 'directional')
       ? 'Directional'
-      : (type === 'point') ? 'Point' : 'Ambient';
+      : (kind === 'point')
+      ? `Point ${info.id ? '#' + info.id.replace('point_', '') : ''}`.trim()
+      : 'Ambient';
     this.lightUI.title.textContent = `Light (${label})`;
     this.lightUI.type.textContent = `Type: ${label}`;
     this.lightUI.color.value = `#${light.color.getHexString()}`;
@@ -2475,9 +2557,13 @@ export class Hotspot3DViewer {
     const intensity = Number.isFinite(light.intensity) ? light.intensity : 0;
     this.lightUI.intensity.slider.value = String(intensity);
     this.lightUI.intensity.label.textContent = intensity.toFixed(2);
-    this._updateLightPowerUI(type);
+    this._updateLightPowerUI(info.id || info.type);
 
-    if (type === 'directional' || type === 'point') {
+    if (this.lightUI.btnDelete) {
+      this.lightUI.btnDelete.style.display = (kind === 'point') ? 'inline-flex' : 'none';
+    }
+
+    if (kind === 'directional' || kind === 'point') {
       if (this.lightUI.gizmoRow) this.lightUI.gizmoRow.style.display = 'flex';
       this.lightUI.pos.block.style.display = 'block';
       if (info.marker) info.marker.position.copy(light.position);
@@ -2488,6 +2574,33 @@ export class Hotspot3DViewer {
       if (this.lightUI.gizmoRow) this.lightUI.gizmoRow.style.display = 'none';
       this.lightUI.pos.block.style.display = 'none';
     }
+  }
+
+  _deleteSelectedLight() {
+    if (!this.selectedLightId) return;
+    const info = this._getLightById(this.selectedLightId);
+    if (!info || info.type !== 'point') return;
+
+    const id = info.id;
+    const light = info.light;
+    const marker = info.marker;
+
+    if (marker) {
+      this.scene.remove(marker);
+      marker.material?.map?.dispose?.();
+      marker.material?.dispose?.();
+    }
+    if (light) {
+      this.scene.remove(light);
+    }
+
+    delete this.lightMarkers[id];
+    delete this.pointLights[id];
+
+    this.selectedLightId = null;
+    this._hideLightUI();
+    this._updateTransformControls();
+    this._emit({ type: 'onLightRemoved', payload: { Id: id } });
   }
 
   _toggleLightPower() {
@@ -2505,7 +2618,7 @@ export class Hotspot3DViewer {
       const prev = Number.isFinite(light.userData?.prevIntensity) ? light.userData.prevIntensity : 0.8;
       light.intensity = prev;
     }
-    this._updateLightUIFromLight(info.type);
+    this._updateLightUIFromLight(this.selectedLightId);
   }
 
   _applyLightFromUI() {
@@ -2524,8 +2637,8 @@ export class Hotspot3DViewer {
     }
 
     if (info.type === 'directional' && this.lightHelper) this.lightHelper.update();
-    this._updateLightMarkerColor(info.type);
-    this._updateLightUIFromLight(info.type);
+    this._updateLightMarkerColor(this.selectedLightId);
+    this._updateLightUIFromLight(this.selectedLightId);
   }
 
   _applyEnvMapIntensityToModel(value) {
@@ -2894,22 +3007,67 @@ export class Hotspot3DViewer {
 
   /* ===== limiti dinamici dal modello ===== */
 
-  _getPointLightAutoPosition() {
+  _getOutsideDistance() {
     const size = this.modelBounds?.size || new THREE.Vector3(2, 2, 2);
-    const maxY = this.modelBounds?.max?.y ?? 1;
-    const y = maxY + Math.max(size.y, 0.1) * 0.5;
-    return new THREE.Vector3(0, y, 0);
+    const maxSize = Math.max(size.x, size.y, size.z, 0.1);
+    const radius = 0.5 * size.length();
+    const margin = Math.max(0.12, maxSize * 0.18);
+    const dist = radius + (margin * 0.4);
+    return Math.max(0.25, dist);
+  }
+
+  _getOutsidePosition(direction) {
+    const dir = (direction && direction.isVector3)
+      ? direction.clone()
+      : new THREE.Vector3(1, 1, 1);
+    if (dir.lengthSq() < 1e-6) dir.set(1, 1, 1);
+    dir.normalize();
+    const center = this.modelBounds?.center || new THREE.Vector3(0, 0, 0);
+    const dist = this._getOutsideDistance();
+    return center.clone().add(dir.multiplyScalar(dist));
+  }
+
+  _getPointLightAutoPosition() {
+    const bounds = this.modelBounds || {};
+    const size = bounds.size || new THREE.Vector3(2, 2, 2);
+    const maxY = bounds.max?.y ?? 1;
+    const center = bounds.center || new THREE.Vector3(0, 0, 0);
+    const y = maxY + Math.max(size.y, 0.1) * 0.12;
+    return new THREE.Vector3(center.x, y, center.z);
+  }
+
+  _applyDirectionalLightAutoPosition() {
+    if (!this.dirLight) return;
+    const light = this.dirLight;
+    const auto = light.userData?.autoPosition !== false;
+    if (!auto) return;
+
+    const dir = new THREE.Vector3(1, 1.1, 1);
+    const pos = this._getOutsidePosition(dir);
+    light.position.copy(pos);
+    if (this.lightMarkers?.directional) {
+      this.lightMarkers.directional.position.copy(pos);
+    }
+    if (this.lightHelper) this.lightHelper.update();
+  }
+
+  _applyAmbientLightMarkerPosition() {
+    if (!this.lightMarkers?.ambient) return;
+    const pos = this._getOutsidePosition(new THREE.Vector3(0, 1, 0));
+    this.lightMarkers.ambient.position.copy(pos);
   }
 
   _applyPointLightAutoPosition() {
-    if (!this.pointLight) return;
-    const auto = this.pointLight.userData?.autoPosition !== false;
-    if (!auto) return;
     const pos = this._getPointLightAutoPosition();
-    this.pointLight.position.copy(pos);
-    if (this.lightMarkers.point) {
-      this.lightMarkers.point.position.copy(pos);
-    }
+    Object.entries(this.pointLights).forEach(([id, light]) => {
+      if (!light) return;
+      const auto = light.userData?.autoPosition !== false;
+      if (!auto) return;
+      light.position.copy(pos);
+      if (this.lightMarkers[id]) {
+        this.lightMarkers[id].position.copy(pos);
+      }
+    });
   }
 
   _recomputeLimitsFromModel() {
@@ -2924,7 +3082,9 @@ export class Hotspot3DViewer {
       this.modelBounds.size.set(2, 2, 2);
 
       this._applyLimitsToUI();
+      this._applyDirectionalLightAutoPosition();
       this._applyPointLightAutoPosition();
+      this._applyAmbientLightMarkerPosition();
       return;
     }
 
@@ -2955,7 +3115,9 @@ export class Hotspot3DViewer {
     this.modelBounds.size.copy(size);
 
     this._applyLimitsToUI();
+    this._applyDirectionalLightAutoPosition();
     this._applyPointLightAutoPosition();
+    this._applyAmbientLightMarkerPosition();
   }
 
   _applyLimitsToUI() {
