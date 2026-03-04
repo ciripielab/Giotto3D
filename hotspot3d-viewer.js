@@ -55,6 +55,7 @@ export class Hotspot3DViewer {
     this.renderer = null;
     this.controls = null;
     this.loader = null;
+    this.clock = new THREE.Clock();
 
     // luci
     this.ambientLight = null;
@@ -70,6 +71,16 @@ export class Hotspot3DViewer {
     this.model = null;
     this.currentModelUrl = '';
     this.pendingModelUrl = '';
+    this.animationMixer = null;
+    this.animationClips = [];
+    this.animationActions = [];
+    this.selectedAnimationIndex = -1;
+    this.isAnimationPlaying = false;
+    this.animationSelection = {
+      selectedIndex: 0,
+      selectedClip: '',
+      playing: false
+    };
 
     // hotspot + selezione
     /** @type {Record<string,THREE.Mesh>} */
@@ -131,11 +142,15 @@ export class Hotspot3DViewer {
   /* =============== PUBLIC API =============== */
 
   init(sharedData) {
-    const { mode, model3D, pointOfView, hotspots = [] } = sharedData || {};
+    const { mode, model3D, pointOfView, hotspots = [], animation } = sharedData || {};
 
     // ELS: se non esiste mode non facciamo niente
     if (mode != null) {
       this.setMode(mode);
+    }
+
+    if (animation != null) {
+      this._setAnimationSelection(animation);
     }
 
     // ELS: se non esiste model3D non facciamo niente
@@ -231,6 +246,7 @@ export class Hotspot3DViewer {
       (gltf) => {
         this.model = gltf.scene;
         this.scene.add(this.model);
+        this._setupModelAnimations(gltf);
         this.currentModelUrl = url;
         this.pendingModelUrl = '';
         this._recomputeLimitsFromModel();
@@ -385,11 +401,92 @@ export class Hotspot3DViewer {
     this.renderer.toneMappingExposure = clamped;
   }
 
+  getAnimationState() {
+    return this._buildAnimationState();
+  }
+
+  setAnimationClip(clipRef) {
+    const index = this._resolveAnimationClipIndex(clipRef);
+    if (index < 0) return false;
+    return this._setActiveAnimationClip(index, {
+      playing: this.isAnimationPlaying,
+      restart: true,
+      sync: true
+    });
+  }
+
+  playAnimation() {
+    if (!this.animationClips.length) return false;
+
+    if (this.selectedAnimationIndex < 0) {
+      return this._setActiveAnimationClip(0, {
+        playing: true,
+        restart: true,
+        sync: true
+      });
+    }
+
+    const action = this.animationActions[this.selectedAnimationIndex];
+    if (!action) return false;
+
+    action.play();
+    action.paused = false;
+    this.isAnimationPlaying = true;
+    this.animationSelection.playing = true;
+    this._emitAnimationState({ sync: true });
+    return true;
+  }
+
+  pauseAnimation() {
+    if (!this.animationClips.length || this.selectedAnimationIndex < 0) return false;
+    const action = this.animationActions[this.selectedAnimationIndex];
+    if (!action) return false;
+
+    action.paused = true;
+    this.isAnimationPlaying = false;
+    this.animationSelection.playing = false;
+    this._emitAnimationState({ sync: true });
+    return true;
+  }
+
   addPointLight({ select = true } = {}) {
     const id = this._createPointLight({ autoPosition: true, intensity: 0.8 });
     if (select && id) this._selectLight(id);
     this._updateHelpersVisibility();
     return id;
+  }
+
+  focusAmbientLight({ select = true } = {}) {
+    const info = this._getLightById('ambient');
+    if (!info || !info.marker || !this.camera || !this.controls) return false;
+
+    const markerPos = info.marker.position.clone();
+    const center = this.modelBounds?.center
+      ? this.modelBounds.center.clone()
+      : new THREE.Vector3(0, 0, 0);
+
+    const dir = markerPos.clone().sub(center);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 1, 0);
+    dir.normalize();
+
+    const offset = Math.max(0.2, this._getOutsideDistance() * 0.35);
+    const camPos = markerPos.clone().add(dir.multiplyScalar(offset));
+    this.camera.position.copy(camPos);
+    this.controls.target.copy(markerPos);
+    this.controls.update();
+
+    if (select) this._selectLight('ambient');
+
+    this._emit({
+      type: 'onPointOfViewChanged',
+      payload: {
+        X: this.camera.position.x,
+        Y: this.camera.position.y,
+        Z: this.camera.position.z
+      }
+    });
+    this._syncAll();
+    return true;
   }
 
   highlightHotspot(id) {
@@ -408,7 +505,7 @@ export class Hotspot3DViewer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(background);
 
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
+    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
     this.camera.position.set(0, 1.5, 3);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -634,6 +731,8 @@ export class Hotspot3DViewer {
 
   _animate = () => {
     requestAnimationFrame(this._animate);
+    const delta = this.clock.getDelta();
+    if (this.animationMixer) this.animationMixer.update(delta);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
@@ -2144,6 +2243,7 @@ export class Hotspot3DViewer {
         Y: this.camera.position.y,
         Z: this.camera.position.z
       },
+      animation: this._buildAnimationState(),
       hotspots: list,
     };
   }
@@ -2154,9 +2254,170 @@ export class Hotspot3DViewer {
 
   _removeModel() {
     if (!this.model) return;
+    this._clearModelAnimations();
     this.scene.remove(this.model);
     this.model = null;
     this._recomputeLimitsFromModel();
+  }
+
+  _setupModelAnimations(gltf) {
+    this._clearModelAnimations();
+
+    const clips = Array.isArray(gltf?.animations) ? gltf.animations : [];
+    if (!this.model || !clips.length) {
+      this.selectedAnimationIndex = -1;
+      this.isAnimationPlaying = false;
+      this.animationSelection = {
+        selectedIndex: 0,
+        selectedClip: '',
+        playing: false
+      };
+      this._emitAnimationState({ sync: true });
+      return;
+    }
+
+    this.animationMixer = new THREE.AnimationMixer(this.model);
+    this.animationClips = clips;
+    this.animationActions = clips.map((clip) => this.animationMixer.clipAction(clip));
+
+    let index = this._resolveAnimationClipIndex(this.animationSelection.selectedClip);
+    if (index < 0) index = this._resolveAnimationClipIndex(this.animationSelection.selectedIndex);
+    if (index < 0) index = 0;
+
+    this._setActiveAnimationClip(index, {
+      playing: !!this.animationSelection.playing,
+      restart: true,
+      sync: true
+    });
+  }
+
+  _clearModelAnimations() {
+    if (!this.animationMixer) {
+      this.animationClips = [];
+      this.animationActions = [];
+      this.selectedAnimationIndex = -1;
+      this.isAnimationPlaying = false;
+      return;
+    }
+
+    this.animationMixer.stopAllAction();
+    if (this.model) this.animationMixer.uncacheRoot(this.model);
+    this.animationMixer = null;
+    this.animationClips = [];
+    this.animationActions = [];
+    this.selectedAnimationIndex = -1;
+    this.isAnimationPlaying = false;
+  }
+
+  _buildAnimationState() {
+    const clips = this.animationClips.map((clip, index) => ({
+      index,
+      name: clip?.name || '',
+      label: this._getAnimationClipLabel(clip, index),
+      duration: Number.isFinite(clip?.duration) ? clip.duration : 0
+    }));
+
+    const selectedClip = this.animationClips[this.selectedAnimationIndex];
+
+    return {
+      available: clips.length > 0,
+      clips,
+      selectedIndex: this.selectedAnimationIndex,
+      selectedClip: selectedClip
+        ? this._getAnimationClipLabel(selectedClip, this.selectedAnimationIndex)
+        : '',
+      playing: this.isAnimationPlaying
+    };
+  }
+
+  _emitAnimationState({ sync = false } = {}) {
+    const payload = this._buildAnimationState();
+    this._emit({ type: 'onAnimationStateChanged', payload });
+    if (sync) this._syncAll();
+  }
+
+  _getAnimationClipLabel(clip, index) {
+    const name = typeof clip?.name === 'string' ? clip.name.trim() : '';
+    return name || `Clip ${index + 1}`;
+  }
+
+  _resolveAnimationClipIndex(clipRef) {
+    if (!this.animationClips.length) return -1;
+
+    if (Number.isInteger(clipRef)) {
+      return (clipRef >= 0 && clipRef < this.animationClips.length) ? clipRef : -1;
+    }
+
+    if (typeof clipRef !== 'string') return -1;
+    const value = clipRef.trim();
+    if (!value) return -1;
+
+    return this.animationClips.findIndex((clip, index) => {
+      const name = typeof clip?.name === 'string' ? clip.name.trim() : '';
+      return name === value || this._getAnimationClipLabel(clip, index) === value;
+    });
+  }
+
+  _setAnimationSelection(animation) {
+    this.animationSelection = {
+      selectedIndex: Number.isInteger(animation?.selectedIndex)
+        ? animation.selectedIndex
+        : this.animationSelection.selectedIndex,
+      selectedClip: typeof animation?.selectedClip === 'string'
+        ? animation.selectedClip
+        : this.animationSelection.selectedClip,
+      playing: typeof animation?.playing === 'boolean'
+        ? animation.playing
+        : this.animationSelection.playing
+    };
+
+    if (this.animationClips.length) {
+      let index = this._resolveAnimationClipIndex(this.animationSelection.selectedClip);
+      if (index < 0) index = this._resolveAnimationClipIndex(this.animationSelection.selectedIndex);
+      if (index < 0) index = 0;
+
+      this._setActiveAnimationClip(index, {
+        playing: !!this.animationSelection.playing,
+        restart: !this.animationSelection.playing,
+        sync: true
+      });
+    }
+  }
+
+  _setActiveAnimationClip(index, { playing = false, restart = true, sync = false } = {}) {
+    if (!this.animationMixer || index < 0 || index >= this.animationClips.length) return false;
+
+    const action = this.animationActions[index];
+    if (!action) return false;
+
+    for (let i = 0; i < this.animationActions.length; i += 1) {
+      const other = this.animationActions[i];
+      if (!other || other === action) continue;
+      other.stop();
+      other.enabled = false;
+      other.paused = false;
+    }
+
+    action.enabled = true;
+    if (restart || this.selectedAnimationIndex !== index) action.reset();
+    action.play();
+    action.paused = !playing;
+
+    if (!playing) {
+      action.time = 0;
+      this.animationMixer.update(0);
+    }
+
+    this.selectedAnimationIndex = index;
+    this.isAnimationPlaying = !!playing;
+    this.animationSelection = {
+      selectedIndex: index,
+      selectedClip: this._getAnimationClipLabel(this.animationClips[index], index),
+      playing: !!playing
+    };
+
+    this._emitAnimationState({ sync });
+    return true;
   }
 
   _clearHotspots() {

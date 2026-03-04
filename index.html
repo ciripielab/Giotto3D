@@ -57,6 +57,7 @@
     #panel { display: grid; gap: 8px; }
     #panel h2 { margin: 0; font-size: 1rem; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .row-column { flex-direction: column; align-items: flex-start; }
 
     button, select, input[type="color"], input[type="text"] {
       font: inherit; padding: .45rem .65rem; border-radius: .5rem; cursor: pointer;
@@ -142,6 +143,16 @@
       </div>
 
       <div class="row">
+        <label class="inline">Animazione:
+          <select id="animation-select" disabled>
+            <option value="">-- nessuna clip --</option>
+          </select>
+        </label>
+        <button id="btn-animation-toggle" disabled>Play</button>
+        <small id="animationStatus">modello fermo</small>
+      </div>
+
+      <div class="row">
         <label class="inline">Background:
           <input type="color" id="bgColor" value="#ffffff" />
         </label>
@@ -165,7 +176,8 @@
         <small>File presenti in /images (da panoramas.json)</small>
       </div>
 
-      <div class="row">
+      <div class="row row-column">
+        <button id="btn-ambient-light">Ambient Light</button>
         <button id="btn-add-point-light">Add Positional Light</button>
       </div>
 

@@ -9,6 +9,16 @@ const MAX_MSGS = 50; // ultimo 50 messaggi
 // Panorama: nome di default nella cartella /images
 const PANORAMA_DEFAULT_NAME = 'EiffelTower.jpg';
 
+function createDefaultAnimationState() {
+  return {
+    available: false,
+    clips: [],
+    selectedIndex: -1,
+    selectedClip: '',
+    playing: false
+  };
+}
+
 // === Stato condiviso (single instance) ===
 let shared = {
   mode: 'view',
@@ -17,6 +27,7 @@ let shared = {
   background: 'color',
   backgroundcolor: '#ffffff',
   panoimage: null,
+  animation: createDefaultAnimationState(),
   hotspots: []
 };
 
@@ -37,13 +48,58 @@ const $panoramaPreset = document.getElementById('panoramaPreset');
 
 const $exposure = document.getElementById('exposure');
 const $exposureLabel = document.getElementById('exposureLabel');
+const $btnAmbientLight = document.getElementById('btn-ambient-light');
 const $btnAddPointLight = document.getElementById('btn-add-point-light');
+const $animationSelect = document.getElementById('animation-select');
+const $btnAnimationToggle = document.getElementById('btn-animation-toggle');
+const $animationStatus = document.getElementById('animationStatus');
 
 function now() { return new Date().toLocaleTimeString(); }
 function render(note = '') {
   $state.textContent = JSON.stringify(shared, null, 2);
   $modeBadge.textContent = `mode: ${shared.mode}`;
   $meta.textContent = `${now()} — ${note}`;
+}
+
+
+function syncAnimationControls(animation = shared.animation) {
+  if (!$animationSelect || !$btnAnimationToggle || !$animationStatus) return;
+
+  const state = animation || createDefaultAnimationState();
+  const clips = Array.isArray(state.clips) ? state.clips : [];
+
+  $animationSelect.innerHTML = '';
+
+  if (!state.available || !clips.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '-- nessuna clip --';
+    $animationSelect.appendChild(opt);
+    $animationSelect.disabled = true;
+    $btnAnimationToggle.disabled = true;
+    $btnAnimationToggle.textContent = 'Play';
+    $animationStatus.textContent = 'modello fermo';
+    return;
+  }
+
+  for (const clip of clips) {
+    const opt = document.createElement('option');
+    opt.value = String(clip.index);
+    opt.textContent = clip.label || clip.name || `Clip ${clip.index + 1}`;
+    $animationSelect.appendChild(opt);
+  }
+
+  $animationSelect.disabled = false;
+  $animationSelect.value = String(
+    Number.isInteger(state.selectedIndex) && state.selectedIndex >= 0
+      ? state.selectedIndex
+      : clips[0].index
+  );
+  $btnAnimationToggle.disabled = false;
+  $btnAnimationToggle.textContent = state.playing ? 'Pause' : 'Play';
+  $animationStatus.textContent = state.playing
+    ? `in riproduzione: ${state.selectedClip || 'clip'}`
+    : `in pausa: ${state.selectedClip || 'clip'}`;
 }
 
 // Area messaggi (separata)
@@ -136,8 +192,10 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
         background: payload.background ?? shared.background,
         backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor,
         panoimage: payload.panoimage ?? shared.panoimage,
+        animation: payload.animation ?? shared.animation,
         hotspots: payload.hotspots ?? shared.hotspots
       };
+      syncAnimationControls(shared.animation);
       render('SYNC_DATA');
       return;
     }
@@ -187,6 +245,13 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       return;
     }
 
+    if (type === 'onAnimationStateChanged' && payload) {
+      shared.animation = payload;
+      syncAnimationControls(shared.animation);
+      render('onAnimationStateChanged');
+      return;
+    }
+
     if (type === 'onBackgroundChanged') {
       render(`background #${payload?.color ?? ''}`);
       return;
@@ -209,6 +274,7 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
 
 // init default (carica modello e stato base)
 viewer.init(shared);
+syncAnimationControls(shared.animation);
 pushMessage('Pronto');
 
 // applica exposure iniziale
@@ -250,9 +316,11 @@ document.getElementById('btn-load').addEventListener('click', () => {
     background: 'color',
     backgroundcolor: '#ffffff',
     panoimage: null,
+    animation: createDefaultAnimationState(),
     hotspots: []
   };
   viewer.init(shared);
+  syncAnimationControls(shared.animation);
   render('loadModel: reset + nuovo modello');
   pushMessage('Modello caricato');
 });
@@ -333,11 +401,45 @@ $btnPanorama?.addEventListener('click', () => {
   pushMessage(`Richiesto panorama 360: ${url}`);
 });
 
+// Focus ambient light and open its panel
+$btnAmbientLight?.addEventListener('click', () => {
+  shared.mode = 'edit';
+  viewer.setMode('edit');
+  const ok = viewer.focusAmbientLight?.({ select: true });
+  render('setMode(edit) + focusAmbientLight');
+  if (ok === false) {
+    pushMessage('Ambient light non disponibile');
+    return;
+  }
+  pushMessage('Ambient light selezionata (Edit Mode)');
+});
+
 // Add positional (point) light
 $btnAddPointLight?.addEventListener('click', () => {
   const id = viewer.addPointLight?.({ select: true });
   render('addPointLight');
   pushMessage(`Positional light aggiunta${id ? `: ${id}` : ''}`);
+});
+
+$animationSelect?.addEventListener('change', () => {
+  const index = Number.parseInt($animationSelect.value, 10);
+  if (!Number.isInteger(index)) return;
+
+  const ok = viewer.setAnimationClip(index);
+  if (!ok) return;
+
+  const label = $animationSelect.selectedOptions[0]?.textContent || `Clip ${index + 1}`;
+  render(`setAnimationClip(${index})`);
+  pushMessage(`Clip selezionata: ${label}`);
+});
+
+$btnAnimationToggle?.addEventListener('click', () => {
+  const wasPlaying = !!shared.animation?.playing;
+  const ok = wasPlaying ? viewer.pauseAnimation() : viewer.playAnimation();
+  if (!ok) return;
+
+  render(wasPlaying ? 'pauseAnimation' : 'playAnimation');
+  pushMessage(wasPlaying ? 'Animazione in pausa' : 'Animazione in riproduzione');
 });
 
 // Exposure slider -> viewer.setExposure
@@ -358,8 +460,10 @@ function resetState({ preserveModel = true } = {}) {
     background: 'color',
     backgroundcolor: '#ffffff',
     panoimage: null,
+    animation: createDefaultAnimationState(),
     hotspots: []
   };
+  syncAnimationControls(shared.animation);
   viewer.init(shared);
   render('reset');
   pushMessage('Reset eseguito');
@@ -395,6 +499,36 @@ function validateSharedData(data) {
 
   // ELS: se esiste model3D lo valida
   if (data.model3D && typeof data.model3D !== 'string') return err('model3D deve essere stringa');
+
+  if (data.animation != null) {
+    if (typeof data.animation !== 'object' || data.animation === null) {
+      return err('animation deve essere un oggetto');
+    }
+
+    if (data.animation.selectedIndex != null && !Number.isInteger(data.animation.selectedIndex)) {
+      return err('animation.selectedIndex deve essere un intero');
+    }
+
+    if (data.animation.selectedClip != null && typeof data.animation.selectedClip !== 'string') {
+      return err('animation.selectedClip deve essere una stringa');
+    }
+
+    if (data.animation.playing != null && typeof data.animation.playing !== 'boolean') {
+      return err('animation.playing deve essere boolean');
+    }
+
+    if (data.animation.clips != null) {
+      if (!Array.isArray(data.animation.clips)) return err('animation.clips deve essere array');
+
+      for (const clip of data.animation.clips) {
+        if (typeof clip !== 'object' || clip === null) return err('animation.clips contiene valori non validi');
+        if (!Number.isInteger(clip.index)) return err('animation.clips[].index deve essere un intero');
+        if (clip.name != null && typeof clip.name !== 'string') return err('animation.clips[].name deve essere stringa');
+        if (clip.label != null && typeof clip.label !== 'string') return err('animation.clips[].label deve essere stringa');
+        if (clip.duration != null && !Number.isFinite(clip.duration)) return err('animation.clips[].duration deve essere numerico');
+      }
+    }
+  }
   
   // ELS: se esiste pointOfView lo valida
   const pov = data.pointOfView;
@@ -489,9 +623,11 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
       background: data.background ?? shared.background,
       backgroundcolor: data.backgroundcolor ?? shared.backgroundcolor,
       panoimage: data.panoimage ?? shared.panoimage,
+      animation: data.animation ?? (data.model3D != null ? createDefaultAnimationState() : shared.animation),
       hotspots: data.hotspots ?? shared.hotspots
     };
 
+    syncAnimationControls(shared.animation);
     viewer.init(shared);
 
     // ELS: Valutare se sia più pulito impostare anche bg e panoImage in init del viewer,
