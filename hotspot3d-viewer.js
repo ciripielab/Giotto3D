@@ -31,6 +31,7 @@ const DEFAULT_BOX_ROT = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_CYL_ROT = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_HOTSPOT_HEX = '#00ff00';
 const DEFAULT_MATERIAL = { roughness: 0.4, metalness: 0.1, envMapIntensity: 1.0 };
+const LOAD_MODEL_MAX_RADIUS = 100;
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -141,8 +142,16 @@ export class Hotspot3DViewer {
 
   /* =============== PUBLIC API =============== */
 
-  init(sharedData) {
-    const { mode, model3D, pointOfView, hotspots = [], animation } = sharedData || {};
+  init(sharedData, { autoCenterAndFitModel = false, forceReloadModel = false } = {}) {
+    const {
+      mode,
+      model3D,
+      model3DScale = null,
+      model3DPosition = null,
+      pointOfView,
+      hotspots = [],
+      animation
+    } = sharedData || {};
 
     // ELS: se non esiste mode non facciamo niente
     if (mode != null) {
@@ -158,7 +167,16 @@ export class Hotspot3DViewer {
       // modello
       if (typeof model3D === 'string') {
         if (model3D) {
-          if (model3D !== this.currentModelUrl) this.loadModel(model3D);
+          if (forceReloadModel || model3D !== this.currentModelUrl) {
+            this.loadModel(model3D, {
+              autoCenterAndFit: autoCenterAndFitModel,
+              initialScale: model3DScale,
+              initialPosition: model3DPosition
+            });
+          } else if (!autoCenterAndFitModel) {
+            this._applyModelScale(model3DScale);
+            this._applyModelPosition(model3DPosition);
+          }
         } else {
           this.pendingModelUrl = '';
           this.currentModelUrl = '';
@@ -171,10 +189,16 @@ export class Hotspot3DViewer {
     // POV
     if (pointOfView) {
       this.camera.position.set(pointOfView.X, pointOfView.Y, pointOfView.Z);
+      const hasTarget = Number.isFinite(pointOfView.targetX)
+        && Number.isFinite(pointOfView.targetY)
+        && Number.isFinite(pointOfView.targetZ);
+      if (hasTarget && this.controls?.target) {
+        this.controls.target.set(pointOfView.targetX, pointOfView.targetY, pointOfView.targetZ);
+      }
       this.controls.update();
       this._emit({
         type: 'onPointOfViewChanged',
-        payload: { ...pointOfView }
+        payload: this._buildPointOfViewPayload()
       });
     }
 
@@ -236,20 +260,30 @@ export class Hotspot3DViewer {
     this._syncAll();
   }
 
-  loadModel(url) {
+  loadModel(url, { autoCenterAndFit = false, initialScale = null, initialPosition = null } = {}) {
     if (!url) return;
     this.pendingModelUrl = url;
     if (this.model) this._removeModel();
+    const requestedScale = this._normalizeModelScale(initialScale);
+    const requestedPosition = this._normalizeModelPosition(initialPosition);
 
     this.loader.load(
       url,
       (gltf) => {
         this.model = gltf.scene;
         this.scene.add(this.model);
+        if (autoCenterAndFit) {
+          this._centerModelAtOrigin();
+          this._scaleModelToMaxRadius(LOAD_MODEL_MAX_RADIUS);
+        } else {
+          this._applyModelScale(requestedScale);
+          this._applyModelPosition(requestedPosition);
+        }
         this._setupModelAnimations(gltf);
         this.currentModelUrl = url;
         this.pendingModelUrl = '';
         this._recomputeLimitsFromModel();
+        if (autoCenterAndFit) this._frameModelInView();
         this._applyEnvMapIntensityToModel(this._envMapIntensity);
         this._applyEmissiveIntensityToModel(this._emissiveIntensity);
         this._syncAll();
@@ -479,11 +513,7 @@ export class Hotspot3DViewer {
 
     this._emit({
       type: 'onPointOfViewChanged',
-      payload: {
-        X: this.camera.position.x,
-        Y: this.camera.position.y,
-        Z: this.camera.position.z
-      }
+      payload: this._buildPointOfViewPayload()
     });
     this._syncAll();
     return true;
@@ -550,11 +580,7 @@ export class Hotspot3DViewer {
     this.controls.addEventListener('end', () => {
       this._emit({
         type: 'onPointOfViewChanged',
-        payload: {
-          X: this.camera.position.x,
-          Y: this.camera.position.y,
-          Z: this.camera.position.z
-        }
+        payload: this._buildPointOfViewPayload()
       });
       this._syncAll();
     });
@@ -2188,6 +2214,18 @@ export class Hotspot3DViewer {
 
   _emit(msg) { this.onEvent?.(msg); }
 
+  _buildPointOfViewPayload() {
+    const target = this.controls?.target;
+    return {
+      X: this.camera.position.x,
+      Y: this.camera.position.y,
+      Z: this.camera.position.z,
+      targetX: Number.isFinite(target?.x) ? target.x : 0,
+      targetY: Number.isFinite(target?.y) ? target.y : 0,
+      targetZ: Number.isFinite(target?.z) ? target.z : 0
+    };
+  }
+
   _buildSharedData() {
     const list = Object.entries(this.hotspots).map(([Id, mesh]) => {
       const shape = mesh.userData?.shape || 'sphere';
@@ -2238,11 +2276,9 @@ export class Hotspot3DViewer {
     return {
       mode: this.currentMode,
       model3D: (this.currentModelUrl || this.pendingModelUrl || ''),
-      pointOfView: {
-        X: this.camera.position.x,
-        Y: this.camera.position.y,
-        Z: this.camera.position.z
-      },
+      model3DScale: this._getExportModelScale(),
+      model3DPosition: this._getExportModelPosition(),
+      pointOfView: this._buildPointOfViewPayload(),
       animation: this._buildAnimationState(),
       hotspots: list,
     };
@@ -2258,6 +2294,117 @@ export class Hotspot3DViewer {
     this.scene.remove(this.model);
     this.model = null;
     this._recomputeLimitsFromModel();
+  }
+
+  _normalizeModelScale(scale) {
+    if (!scale || typeof scale !== 'object') return { x: 1, y: 1, z: 1 };
+    const x = Number.isFinite(scale.x) ? scale.x : 1;
+    const y = Number.isFinite(scale.y) ? scale.y : 1;
+    const z = Number.isFinite(scale.z) ? scale.z : 1;
+    return { x, y, z };
+  }
+
+  _normalizeModelPosition(position) {
+    if (!position || typeof position !== 'object') return { x: 0, y: 0, z: 0 };
+    const x = Number.isFinite(position.x) ? position.x : 0;
+    const y = Number.isFinite(position.y) ? position.y : 0;
+    const z = Number.isFinite(position.z) ? position.z : 0;
+    return { x, y, z };
+  }
+
+  _applyModelScale(scale) {
+    if (!this.model) return;
+    const next = this._normalizeModelScale(scale);
+    this.model.scale.set(next.x, next.y, next.z);
+    this.model.updateMatrixWorld(true);
+    this._recomputeLimitsFromModel();
+  }
+
+  _applyModelPosition(position) {
+    if (!this.model) return;
+    const next = this._normalizeModelPosition(position);
+    this.model.position.set(next.x, next.y, next.z);
+    this.model.updateMatrixWorld(true);
+    this._recomputeLimitsFromModel();
+  }
+
+  _getExportModelScale() {
+    if (!this.model) return null;
+    const scale = this._normalizeModelScale(this.model.scale);
+    const eps = 1e-6;
+    const isDefault = Math.abs(scale.x - 1) < eps
+      && Math.abs(scale.y - 1) < eps
+      && Math.abs(scale.z - 1) < eps;
+    return isDefault ? null : scale;
+  }
+
+  _getExportModelPosition() {
+    if (!this.model) return null;
+    const position = this._normalizeModelPosition(this.model.position);
+    const eps = 1e-6;
+    const isDefault = Math.abs(position.x) < eps
+      && Math.abs(position.y) < eps
+      && Math.abs(position.z) < eps;
+    return isDefault ? null : position;
+  }
+
+  _centerModelAtOrigin() {
+    if (!this.model) return;
+    this.model.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(this.model);
+    if (box.isEmpty()) return;
+
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    this.model.position.sub(center);
+    this.model.updateMatrixWorld(true);
+  }
+
+  _scaleModelToMaxRadius(maxRadius) {
+    if (!this.model || !Number.isFinite(maxRadius) || maxRadius <= 0) return;
+
+    this.model.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(this.model);
+    if (box.isEmpty()) return;
+
+    const sphere = new THREE.Sphere();
+    box.getBoundingSphere(sphere);
+    if (!Number.isFinite(sphere.radius) || sphere.radius <= maxRadius) return;
+
+    const scaleFactor = (maxRadius * 0.999) / sphere.radius;
+    this.model.scale.multiplyScalar(scaleFactor);
+    this.model.updateMatrixWorld(true);
+  }
+
+  _frameModelInView() {
+    if (!this.model || !this.camera || !this.controls) return;
+
+    this.model.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(this.model);
+    if (box.isEmpty()) return;
+
+    const sphere = new THREE.Sphere();
+    box.getBoundingSphere(sphere);
+
+    const center = sphere.center.clone();
+    const radius = Math.max(sphere.radius, 0.1);
+    const verticalFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * this.camera.aspect);
+    const limitingFov = Math.max(0.1, Math.min(verticalFov, horizontalFov));
+    const distance = (radius / Math.sin(limitingFov * 0.5)) * 1.15;
+
+    const direction = this.camera.position.clone().sub(this.controls.target);
+    if (direction.lengthSq() < 1e-6) direction.set(1, 0.45, 1);
+    direction.normalize();
+
+    this.controls.target.copy(center);
+    this.camera.position.copy(center.clone().add(direction.multiplyScalar(distance)));
+    this.controls.update();
+
+    this._emit({
+      type: 'onPointOfViewChanged',
+      payload: this._buildPointOfViewPayload()
+    });
   }
 
   _setupModelAnimations(gltf) {

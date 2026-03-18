@@ -47,3 +47,5 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+models/bath_day.glb
+models/Elefante_fil.glb

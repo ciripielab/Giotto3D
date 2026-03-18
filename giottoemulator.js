@@ -3,7 +3,7 @@ import { Hotspot3DViewer } from './hotspot3d-viewer.js';
 
 // === Config ===
 const DEFAULT_MODEL_URL = '/models/plane.glb'; // stessa origine => niente CORS
-const DEFAULT_POV = { X: 0, Y: 1.5, Z: 3 };
+const DEFAULT_POV = { X: 0, Y: 1.5, Z: 3, targetX: 0, targetY: 0, targetZ: 0 };
 const MAX_MSGS = 50; // ultimo 50 messaggi
 
 // Panorama: nome di default nella cartella /images
@@ -23,6 +23,8 @@ function createDefaultAnimationState() {
 let shared = {
   mode: 'view',
   model3D: DEFAULT_MODEL_URL,
+  model3DScale: null,
+  model3DPosition: null,
   pointOfView: { ...DEFAULT_POV },
   background: 'color',
   backgroundcolor: '#ffffff',
@@ -188,6 +190,8 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
       shared = {
         mode: payload.mode ?? shared.mode,
         model3D: payload.model3D ?? shared.model3D,
+        model3DScale: payload.model3DScale !== undefined ? payload.model3DScale : shared.model3DScale,
+        model3DPosition: payload.model3DPosition !== undefined ? payload.model3DPosition : shared.model3DPosition,
         pointOfView: payload.pointOfView ?? shared.pointOfView,
         background: payload.background ?? shared.background,
         backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor,
@@ -312,6 +316,8 @@ document.getElementById('btn-load').addEventListener('click', () => {
   shared = {
     mode: 'view',
     model3D: url,
+    model3DScale: null,
+    model3DPosition: null,
     pointOfView: { ...DEFAULT_POV },
     background: 'color',
     backgroundcolor: '#ffffff',
@@ -319,7 +325,7 @@ document.getElementById('btn-load').addEventListener('click', () => {
     animation: createDefaultAnimationState(),
     hotspots: []
   };
-  viewer.init(shared);
+  viewer.init(shared, { autoCenterAndFitModel: true, forceReloadModel: true });
   syncAnimationControls(shared.animation);
   render('loadModel: reset + nuovo modello');
   pushMessage('Modello caricato');
@@ -453,9 +459,13 @@ $exposure?.addEventListener('input', () => {
 // Reset (mantiene il modello corrente)
 function resetState({ preserveModel = true } = {}) {
   const modelUrl = preserveModel ? shared.model3D : DEFAULT_MODEL_URL;
+  const modelScale = preserveModel ? shared.model3DScale : null;
+  const modelPosition = preserveModel ? shared.model3DPosition : null;
   shared = {
     mode: 'view',
     model3D: modelUrl,
+    model3DScale: modelScale,
+    model3DPosition: modelPosition,
     pointOfView: { ...DEFAULT_POV },
     background: 'color',
     backgroundcolor: '#ffffff',
@@ -472,7 +482,19 @@ $btnReset?.addEventListener('click', () => resetState({ preserveModel: true }));
 
 // Download / Import JSON
 function downloadJSON() {
-  const blob = new Blob([JSON.stringify(shared, null, 2)], { type: 'application/json' });
+  // Snapshot live dal viewer per evitare race condition (es. modello appena caricato/scalato).
+  const live = viewer.getSharedData();
+  const exportData = {
+    ...shared,
+    mode: live.mode ?? shared.mode,
+    model3D: live.model3D ?? shared.model3D,
+    model3DScale: live.model3DScale !== undefined ? live.model3DScale : shared.model3DScale,
+    model3DPosition: live.model3DPosition !== undefined ? live.model3DPosition : shared.model3DPosition,
+    pointOfView: live.pointOfView ?? shared.pointOfView,
+    animation: live.animation ?? shared.animation,
+    hotspots: live.hotspots ?? shared.hotspots
+  };
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -499,6 +521,20 @@ function validateSharedData(data) {
 
   // ELS: se esiste model3D lo valida
   if (data.model3D && typeof data.model3D !== 'string') return err('model3D deve essere stringa');
+  if (data.model3DScale != null) {
+    if (typeof data.model3DScale !== 'object') return err('model3DScale deve essere oggetto o null');
+    const { x, y, z } = data.model3DScale;
+    if (!isNum(x) || !isNum(y) || !isNum(z) || x <= 0 || y <= 0 || z <= 0) {
+      return err('model3DScale deve avere x,y,z numerici maggiori di 0');
+    }
+  }
+  if (data.model3DPosition != null) {
+    if (typeof data.model3DPosition !== 'object') return err('model3DPosition deve essere oggetto o null');
+    const { x, y, z } = data.model3DPosition;
+    if (!isNum(x) || !isNum(y) || !isNum(z)) {
+      return err('model3DPosition deve avere x,y,z numerici');
+    }
+  }
 
   if (data.animation != null) {
     if (typeof data.animation !== 'object' || data.animation === null) {
@@ -533,6 +569,11 @@ function validateSharedData(data) {
   // ELS: se esiste pointOfView lo valida
   const pov = data.pointOfView;
   if (pov != null && (!isNum(pov.X) || !isNum(pov.Y) || !isNum(pov.Z))) return err('pointOfView deve avere X,Y,Z numerici');
+  if (pov != null) {
+    if (pov.targetX != null && !isNum(pov.targetX)) return err('pointOfView.targetX deve essere numerico');
+    if (pov.targetY != null && !isNum(pov.targetY)) return err('pointOfView.targetY deve essere numerico');
+    if (pov.targetZ != null && !isNum(pov.targetZ)) return err('pointOfView.targetZ deve essere numerico');
+  }
 
   // ELS: se esiste background lo valida
   if (data.background != null && !['color', 'pano'].includes(data.background)) return err('background non valido (usa color o pano)');
@@ -619,6 +660,12 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     shared = {
       mode: data.mode ?? shared.mode,
       model3D: data.model3D ?? shared.model3D,
+      model3DScale: data.model3DScale !== undefined
+        ? data.model3DScale
+        : (data.model3D != null ? null : shared.model3DScale),
+      model3DPosition: data.model3DPosition !== undefined
+        ? data.model3DPosition
+        : (data.model3D != null ? null : shared.model3DPosition),
       pointOfView: data.pointOfView ?? shared.pointOfView,
       background: data.background ?? shared.background,
       backgroundcolor: data.backgroundcolor ?? shared.backgroundcolor,
