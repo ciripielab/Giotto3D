@@ -5,6 +5,17 @@ import { Hotspot3DViewer } from './hotspot3d-viewer.js';
 const DEFAULT_MODEL_URL = '/models/plane.glb'; // stessa origine => niente CORS
 const DEFAULT_POV = { X: 0, Y: 1.5, Z: 3, targetX: 0, targetY: 0, targetZ: 0 };
 const MAX_MSGS = 50; // ultimo 50 messaggi
+const LOAD_MODEL_FIT_OPTIONS = {
+  anchor: 'ground', // 'ground' | 'center'
+  maxRadius: 100,
+  scaleUp: false
+};
+const LIGHT_MARKER_OPTIONS = {
+  scaleFactor: 0.03,
+  minScale: 0.18,
+  maxScale: 6,
+  sizeAttenuation: true
+};
 
 // Panorama: nome di default nella cartella /images
 const PANORAMA_DEFAULT_NAME = 'EiffelTower.jpg';
@@ -174,6 +185,7 @@ loadPanoramaList();
 
 /* ===== Viewer singolo ===== */
 const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
+  lightMarkerOptions: LIGHT_MARKER_OPTIONS,
   onEvent: ({ type, payload }) => {
     // Messaggi di selezione di un hotspot in View/Edit/Hide Mode
     if (type === 'onHotspotSelected') {
@@ -325,7 +337,11 @@ document.getElementById('btn-load').addEventListener('click', () => {
     animation: createDefaultAnimationState(),
     hotspots: []
   };
-  viewer.init(shared, { autoCenterAndFitModel: true, forceReloadModel: true });
+  viewer.init(shared, {
+    autoCenterAndFitModel: true,
+    forceReloadModel: true,
+    modelFitOptions: LOAD_MODEL_FIT_OPTIONS
+  });
   syncAnimationControls(shared.animation);
   render('loadModel: reset + nuovo modello');
   pushMessage('Modello caricato');

@@ -85,7 +85,9 @@ viewer.init(shared);
 new Hotspot3DViewer(container, {
   modelUrl = '',
   onEvent = () => {},
-  background = 0xf0f0f0
+  background = 0xf0f0f0,
+  modelFitOptions = { anchor: 'ground', maxRadius: 100, scaleUp: false },
+  lightMarkerOptions = { scaleFactor: 0.03, minScale: 0.18, maxScale: 6, sizeAttenuation: true }
 })
 ```
 
@@ -93,6 +95,11 @@ new Hotspot3DViewer(container, {
 - `modelUrl` (`string`, opzionale): se valorizzato, richiama automaticamente `loadModel(modelUrl)`.
 - `onEvent` (`function`, opzionale): callback centralizzata eventi `{ type, payload }`.
 - `background` (`number|string`, opzionale): colore iniziale scena.
+- `modelFitOptions` (`object`, opzionale): default per normalizzazione modello in auto-fit.
+- `lightMarkerOptions` (`object`, opzionale): scala marker luci in base alla dimensione modello.
+  - `scaleFactor`: moltiplicatore rispetto alla dimensione massima del modello
+  - `minScale` / `maxScale`: clamp della scala marker
+  - `sizeAttenuation`: comportamento prospettico sprite (`true` consigliato)
 
 ### 3) Metodi pubblici
 
@@ -101,7 +108,8 @@ new Hotspot3DViewer(container, {
 ```js
 viewer.init(sharedData, {
   autoCenterAndFitModel: false,
-  forceReloadModel: false
+  forceReloadModel: false,
+  modelFitOptions: { anchor: 'ground', maxRadius: 100, scaleUp: false }
 });
 ```
 
@@ -115,6 +123,10 @@ Applica stato condiviso:
 Opzioni:
 - `autoCenterAndFitModel`: centra e adatta il modello al caricamento.
 - `forceReloadModel`: forza ricarica anche con URL uguale al corrente.
+- `modelFitOptions`:
+  - `anchor: 'ground' | 'center'` (`ground`: centra su XZ e appoggia la base a `y=0`)
+  - `maxRadius: number` (limite della bounding sphere)
+  - `scaleUp: boolean` (`false` = riduce solo modelli grandi)
 
 #### `loadModel(url, options?)`
 
@@ -122,7 +134,8 @@ Opzioni:
 viewer.loadModel('/models/plane.glb', {
   autoCenterAndFit: true,
   initialScale: { x: 1, y: 1, z: 1 },
-  initialPosition: { x: 0, y: 0, z: 0 }
+  initialPosition: { x: 0, y: 0, z: 0 },
+  modelFitOptions: { anchor: 'ground', maxRadius: 100, scaleUp: false }
 });
 ```
 

@@ -32,6 +32,17 @@ const DEFAULT_CYL_ROT = { x: 0, y: 0, z: 0 }; // gradi
 const DEFAULT_HOTSPOT_HEX = '#00ff00';
 const DEFAULT_MATERIAL = { roughness: 0.4, metalness: 0.1, envMapIntensity: 1.0 };
 const LOAD_MODEL_MAX_RADIUS = 100;
+const DEFAULT_MODEL_FIT_OPTIONS = {
+  anchor: 'ground', // 'ground' | 'center'
+  maxRadius: LOAD_MODEL_MAX_RADIUS,
+  scaleUp: false
+};
+const DEFAULT_LIGHT_MARKER_OPTIONS = {
+  scaleFactor: 0.03,  // marker scale ~ max model size * factor
+  minScale: 0.18,     // fallback for small models
+  maxScale: 6.0,      // avoid huge sprites
+  sizeAttenuation: true
+};
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -43,9 +54,18 @@ const SCALE_STEP = 0.01; // step per scale / raggio
 export class Hotspot3DViewer {
   /**
    * @param {HTMLElement} container
-   * @param {{ modelUrl?: string, onEvent?: (msg:{type:string,payload?:any})=>void, background?: number|string }} options
+   * @param {{ modelUrl?: string, onEvent?: (msg:{type:string,payload?:any})=>void, background?: number|string, modelFitOptions?: { anchor?: 'ground'|'center', maxRadius?: number, scaleUp?: boolean }, lightMarkerOptions?: { scaleFactor?: number, minScale?: number, maxScale?: number, sizeAttenuation?: boolean } }} options
    */
-  constructor(container, { modelUrl = '', onEvent = () => { }, background = 0xf0f0f0 } = {}) {
+  constructor(
+    container,
+    {
+      modelUrl = '',
+      onEvent = () => { },
+      background = 0xf0f0f0,
+      modelFitOptions = null,
+      lightMarkerOptions = null
+    } = {}
+  ) {
     if (!container) throw new Error('Hotspot3DViewer: container mancante');
     this.container = container;
     this.onEvent = (msg) => { try { onEvent?.(msg); } catch { } };
@@ -82,6 +102,8 @@ export class Hotspot3DViewer {
       selectedClip: '',
       playing: false
     };
+    this.defaultModelFitOptions = this._normalizeModelFitOptions(modelFitOptions);
+    this.lightMarkerOptions = this._normalizeLightMarkerOptions(lightMarkerOptions);
 
     // hotspot + selezione
     /** @type {Record<string,THREE.Mesh>} */
@@ -142,7 +164,14 @@ export class Hotspot3DViewer {
 
   /* =============== PUBLIC API =============== */
 
-  init(sharedData, { autoCenterAndFitModel = false, forceReloadModel = false } = {}) {
+  init(
+    sharedData,
+    {
+      autoCenterAndFitModel = false,
+      forceReloadModel = false,
+      modelFitOptions = null
+    } = {}
+  ) {
     const {
       mode,
       model3D,
@@ -171,11 +200,15 @@ export class Hotspot3DViewer {
             this.loadModel(model3D, {
               autoCenterAndFit: autoCenterAndFitModel,
               initialScale: model3DScale,
-              initialPosition: model3DPosition
+              initialPosition: model3DPosition,
+              modelFitOptions
             });
           } else if (!autoCenterAndFitModel) {
             this._applyModelScale(model3DScale);
             this._applyModelPosition(model3DPosition);
+          } else {
+            this._fitModelToAnchorAndRadius(this._normalizeModelFitOptions(modelFitOptions));
+            this._frameModelInView();
           }
         } else {
           this.pendingModelUrl = '';
@@ -224,7 +257,10 @@ export class Hotspot3DViewer {
             h: (h.dims?.h ?? DEFAULT_CYL.h)
           };
         }
-        dims = this._clampDimsToLimits(shape, dims);
+        const canUseModelLimits = !!this.model && !this.pendingModelUrl;
+        dims = canUseModelLimits
+          ? this._clampDimsToLimits(shape, dims)
+          : this._clampDimsToMinimum(shape, dims);
 
         const num = (v, dflt) => Number.isFinite(v) ? v : dflt;
 
@@ -253,19 +289,28 @@ export class Hotspot3DViewer {
 
     // ELS: la selezione dell'hotspot la lascio fuori dal check, 
     // però forse potrebbe essere opportuno cambiare selezione solo se il json importato ha modificato hotsposts 
-    if (hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
+    if (this.currentMode === 'edit' && hotspots.length) this._selectHotspot(hotspots[0].Id, { notify: false });
     else this._selectHotspot(null, { notify: false });
 
     this._updateHotspotVisibility();
     this._syncAll();
   }
 
-  loadModel(url, { autoCenterAndFit = false, initialScale = null, initialPosition = null } = {}) {
+  loadModel(
+    url,
+    {
+      autoCenterAndFit = false,
+      initialScale = null,
+      initialPosition = null,
+      modelFitOptions = null
+    } = {}
+  ) {
     if (!url) return;
     this.pendingModelUrl = url;
     if (this.model) this._removeModel();
     const requestedScale = this._normalizeModelScale(initialScale);
     const requestedPosition = this._normalizeModelPosition(initialPosition);
+    const fitOptions = this._normalizeModelFitOptions(modelFitOptions);
 
     this.loader.load(
       url,
@@ -273,8 +318,7 @@ export class Hotspot3DViewer {
         this.model = gltf.scene;
         this.scene.add(this.model);
         if (autoCenterAndFit) {
-          this._centerModelAtOrigin();
-          this._scaleModelToMaxRadius(LOAD_MODEL_MAX_RADIUS);
+          this._fitModelToAnchorAndRadius(fitOptions);
         } else {
           this._applyModelScale(requestedScale);
           this._applyModelPosition(requestedPosition);
@@ -2312,6 +2356,66 @@ export class Hotspot3DViewer {
     return { x, y, z };
   }
 
+  _normalizeModelFitOptions(options) {
+    const fallback = this.defaultModelFitOptions || DEFAULT_MODEL_FIT_OPTIONS;
+    const source = (options && typeof options === 'object') ? options : fallback;
+    const anchor = (source?.anchor === 'center' || source?.anchor === 'ground')
+      ? source.anchor
+      : fallback.anchor;
+    const maxRadius = (Number.isFinite(source?.maxRadius) && source.maxRadius > 0)
+      ? source.maxRadius
+      : fallback.maxRadius;
+    const scaleUp = (typeof source?.scaleUp === 'boolean')
+      ? source.scaleUp
+      : fallback.scaleUp;
+
+    return { anchor, maxRadius, scaleUp };
+  }
+
+  _normalizeLightMarkerOptions(options) {
+    const fallback = this.lightMarkerOptions || DEFAULT_LIGHT_MARKER_OPTIONS;
+    const source = (options && typeof options === 'object') ? options : fallback;
+
+    const scaleFactor = (Number.isFinite(source?.scaleFactor) && source.scaleFactor > 0)
+      ? source.scaleFactor
+      : fallback.scaleFactor;
+    const minScale = (Number.isFinite(source?.minScale) && source.minScale > 0)
+      ? source.minScale
+      : fallback.minScale;
+    const maxScale = (Number.isFinite(source?.maxScale) && source.maxScale >= minScale)
+      ? source.maxScale
+      : Math.max(fallback.maxScale, minScale);
+    const sizeAttenuation = (typeof source?.sizeAttenuation === 'boolean')
+      ? source.sizeAttenuation
+      : fallback.sizeAttenuation;
+
+    return { scaleFactor, minScale, maxScale, sizeAttenuation };
+  }
+
+  _getLightMarkerScale() {
+    const options = this.lightMarkerOptions || DEFAULT_LIGHT_MARKER_OPTIONS;
+    const size = this.modelBounds?.size || new THREE.Vector3(2, 2, 2);
+    const maxSize = Math.max(size.x, size.y, size.z, 0.1);
+    const raw = maxSize * options.scaleFactor;
+    return Math.min(Math.max(raw, options.minScale), options.maxScale);
+  }
+
+  _updateLightMarkerScale(markers = null) {
+    const options = this.lightMarkerOptions || DEFAULT_LIGHT_MARKER_OPTIONS;
+    const scale = this._getLightMarkerScale();
+    const list = Array.isArray(markers)
+      ? markers.filter(Boolean)
+      : Object.values(this.lightMarkers).filter(Boolean);
+
+    for (const marker of list) {
+      marker.scale.set(scale, scale, 1);
+      if (marker.material) {
+        marker.material.sizeAttenuation = options.sizeAttenuation;
+        marker.material.needsUpdate = true;
+      }
+    }
+  }
+
   _applyModelScale(scale) {
     if (!this.model) return;
     const next = this._normalizeModelScale(scale);
@@ -2348,7 +2452,15 @@ export class Hotspot3DViewer {
     return isDefault ? null : position;
   }
 
-  _centerModelAtOrigin() {
+  _fitModelToAnchorAndRadius({ anchor = 'ground', maxRadius = LOAD_MODEL_MAX_RADIUS, scaleUp = false } = {}) {
+    if (!this.model) return;
+    this._anchorModelAtOrigin(anchor);
+    this._scaleModelToMaxRadius(maxRadius, { scaleUp });
+    // riallineamento finale per evitare drift numerico dopo lo scale
+    this._anchorModelAtOrigin(anchor);
+  }
+
+  _anchorModelAtOrigin(anchor = 'center') {
     if (!this.model) return;
     this.model.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(this.model);
@@ -2356,11 +2468,22 @@ export class Hotspot3DViewer {
 
     const center = new THREE.Vector3();
     box.getCenter(center);
-    this.model.position.sub(center);
+    const min = box.min.clone();
+    const delta = new THREE.Vector3(-center.x, -center.y, -center.z);
+
+    if (anchor === 'ground') {
+      delta.y = -min.y;
+    }
+
+    this.model.position.add(delta);
     this.model.updateMatrixWorld(true);
   }
 
-  _scaleModelToMaxRadius(maxRadius) {
+  _centerModelAtOrigin() {
+    this._anchorModelAtOrigin('center');
+  }
+
+  _scaleModelToMaxRadius(maxRadius, { scaleUp = false } = {}) {
     if (!this.model || !Number.isFinite(maxRadius) || maxRadius <= 0) return;
 
     this.model.updateMatrixWorld(true);
@@ -2369,7 +2492,11 @@ export class Hotspot3DViewer {
 
     const sphere = new THREE.Sphere();
     box.getBoundingSphere(sphere);
-    if (!Number.isFinite(sphere.radius) || sphere.radius <= maxRadius) return;
+    if (!Number.isFinite(sphere.radius) || sphere.radius <= 0) return;
+
+    const needsDownScale = sphere.radius > maxRadius;
+    const needsUpScale = scaleUp && sphere.radius < maxRadius;
+    if (!needsDownScale && !needsUpScale) return;
 
     const scaleFactor = (maxRadius * 0.999) / sphere.radius;
     this.model.scale.multiplyScalar(scaleFactor);
@@ -2783,6 +2910,7 @@ export class Hotspot3DViewer {
       marker.userData.baseColor = LIGHT_MARKER_COLOR;
       this.scene.add(marker);
       this.lightMarkers[id] = marker;
+      this._updateLightMarkerScale([marker]);
     }
 
     return id;
@@ -2815,14 +2943,17 @@ export class Hotspot3DViewer {
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.needsUpdate = true;
+    const markerOptions = this.lightMarkerOptions || DEFAULT_LIGHT_MARKER_OPTIONS;
     const mat = new THREE.SpriteMaterial({
       map: tex,
       color: 0xffffff,
       depthTest: false,
-      depthWrite: false
+      depthWrite: false,
+      sizeAttenuation: markerOptions.sizeAttenuation
     });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.18, 0.18, 1);
+    const scale = this._getLightMarkerScale();
+    sprite.scale.set(scale, scale, 1);
     sprite.renderOrder = 3;
     sprite.visible = false;
     return sprite;
@@ -2861,6 +2992,7 @@ export class Hotspot3DViewer {
       this.scene.add(marker);
       this.lightMarkers[id] = marker;
     });
+    this._updateLightMarkerScale();
   }
 
   _getLightById(id) {
@@ -3490,6 +3622,7 @@ export class Hotspot3DViewer {
       this.modelBounds.size.set(2, 2, 2);
 
       this._applyLimitsToUI();
+      this._updateLightMarkerScale();
       this._applyDirectionalLightAutoPosition();
       this._applyPointLightAutoPosition();
       this._applyAmbientLightMarkerPosition();
@@ -3523,6 +3656,7 @@ export class Hotspot3DViewer {
     this.modelBounds.size.copy(size);
 
     this._applyLimitsToUI();
+    this._updateLightMarkerScale();
     this._applyDirectionalLightAutoPosition();
     this._applyPointLightAutoPosition();
     this._applyAmbientLightMarkerPosition();
@@ -3565,6 +3699,24 @@ export class Hotspot3DViewer {
       return {
         r: clamp(dims.r, 0.01, this.modelLimits.maxCylinder.r),
         h: clamp(dims.h, 0.02, this.modelLimits.maxCylinder.h),
+      };
+    }
+  }
+
+  _clampDimsToMinimum(shape, dims) {
+    const atLeast = (v, mn) => Number.isFinite(v) ? Math.max(v, mn) : mn;
+    if (shape === 'sphere') {
+      return { r: atLeast(dims.r, 0.01) };
+    } else if (shape === 'box') {
+      return {
+        x: atLeast(dims.x, 0.02),
+        y: atLeast(dims.y, 0.02),
+        z: atLeast(dims.z, 0.02),
+      };
+    } else {
+      return {
+        r: atLeast(dims.r, 0.01),
+        h: atLeast(dims.h, 0.02),
       };
     }
   }
