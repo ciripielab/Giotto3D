@@ -179,7 +179,8 @@ export class Hotspot3DViewer {
       model3DPosition = null,
       pointOfView,
       hotspots = [],
-      animation
+      animation,
+      exposure
     } = sharedData || {};
 
     // ELS: se non esiste mode non facciamo niente
@@ -189,6 +190,10 @@ export class Hotspot3DViewer {
 
     if (animation != null) {
       this._setAnimationSelection(animation);
+    }
+
+    if (exposure != null) {
+      this.setExposure(exposure);
     }
 
     // ELS: se non esiste model3D non facciamo niente
@@ -473,10 +478,11 @@ export class Hotspot3DViewer {
    */
   setExposure(value) {
     const v = Number(value);
-    if (!Number.isFinite(v) || !this.renderer) return;
+    if (!Number.isFinite(v) || !this.renderer) return null;
     const clamped = Math.min(Math.max(v, 0), 2);
     this._exposure = clamped;
     this.renderer.toneMappingExposure = clamped;
+    return clamped;
   }
 
   getAnimationState() {
@@ -2324,6 +2330,7 @@ export class Hotspot3DViewer {
       model3DPosition: this._getExportModelPosition(),
       pointOfView: this._buildPointOfViewPayload(),
       animation: this._buildAnimationState(),
+      exposure: this._exposure,
       hotspots: list,
     };
   }

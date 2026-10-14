@@ -4,6 +4,7 @@ import { Hotspot3DViewer } from './hotspot3d-viewer.js';
 // === Config ===
 const DEFAULT_MODEL_URL = '/models/plane.glb'; // stessa origine => niente CORS
 const DEFAULT_POV = { X: 0, Y: 1.5, Z: 3, targetX: 0, targetY: 0, targetZ: 0 };
+const DEFAULT_EXPOSURE = 0.8;
 const MAX_MSGS = 50; // ultimo 50 messaggi
 const LOAD_MODEL_FIT_OPTIONS = {
   anchor: 'ground', // 'ground' | 'center'
@@ -41,6 +42,7 @@ let shared = {
   backgroundcolor: '#ffffff',
   panoimage: null,
   animation: createDefaultAnimationState(),
+  exposure: DEFAULT_EXPOSURE,
   hotspots: []
 };
 
@@ -68,6 +70,15 @@ const $btnAnimationToggle = document.getElementById('btn-animation-toggle');
 const $animationStatus = document.getElementById('animationStatus');
 
 function now() { return new Date().toLocaleTimeString(); }
+
+function syncExposureControls(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || !$exposure) return;
+  const clamped = Math.min(Math.max(v, 0), 2);
+  $exposure.value = String(clamped);
+  if ($exposureLabel) $exposureLabel.textContent = clamped.toFixed(2);
+}
+
 function render(note = '') {
   $state.textContent = JSON.stringify(shared, null, 2);
   $modeBadge.textContent = `mode: ${shared.mode}`;
@@ -209,9 +220,11 @@ const viewer = new Hotspot3DViewer(document.getElementById('viewer'), {
         backgroundcolor: payload.backgroundcolor ?? shared.backgroundcolor,
         panoimage: payload.panoimage ?? shared.panoimage,
         animation: payload.animation ?? shared.animation,
+        exposure: payload.exposure ?? shared.exposure,
         hotspots: payload.hotspots ?? shared.hotspots
       };
       syncAnimationControls(shared.animation);
+      syncExposureControls(shared.exposure);
       render('SYNC_DATA');
       return;
     }
@@ -293,14 +306,7 @@ viewer.init(shared);
 syncAnimationControls(shared.animation);
 pushMessage('Pronto');
 
-// applica exposure iniziale
-if ($exposure) {
-  const initVal = parseFloat($exposure.value);
-  if (Number.isFinite(initVal)) {
-    viewer.setExposure(initVal);
-    if ($exposureLabel) $exposureLabel.textContent = initVal.toFixed(2);
-  }
-}
+syncExposureControls(shared.exposure);
 
 // === Azioni UI ===
 
@@ -335,6 +341,7 @@ document.getElementById('btn-load').addEventListener('click', () => {
     backgroundcolor: '#ffffff',
     panoimage: null,
     animation: createDefaultAnimationState(),
+    exposure: DEFAULT_EXPOSURE,
     hotspots: []
   };
   viewer.init(shared, {
@@ -468,8 +475,11 @@ $btnAnimationToggle?.addEventListener('click', () => {
 $exposure?.addEventListener('input', () => {
   const v = parseFloat($exposure.value);
   if (!Number.isFinite(v)) return;
-  viewer.setExposure(v);
-  if ($exposureLabel) $exposureLabel.textContent = v.toFixed(2);
+  const applied = viewer.setExposure(v);
+  if (applied == null) return;
+  shared.exposure = applied;
+  syncExposureControls(applied);
+  render('setExposure');
 });
 
 // Reset (mantiene il modello corrente)
@@ -487,9 +497,11 @@ function resetState({ preserveModel = true } = {}) {
     backgroundcolor: '#ffffff',
     panoimage: null,
     animation: createDefaultAnimationState(),
+    exposure: DEFAULT_EXPOSURE,
     hotspots: []
   };
   syncAnimationControls(shared.animation);
+  syncExposureControls(shared.exposure);
   viewer.init(shared);
   render('reset');
   pushMessage('Reset eseguito');
@@ -508,6 +520,7 @@ function downloadJSON() {
     model3DPosition: live.model3DPosition !== undefined ? live.model3DPosition : shared.model3DPosition,
     pointOfView: live.pointOfView ?? shared.pointOfView,
     animation: live.animation ?? shared.animation,
+    exposure: live.exposure ?? shared.exposure,
     hotspots: live.hotspots ?? shared.hotspots
   };
   const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -604,6 +617,10 @@ function validateSharedData(data) {
     return err('panoimage deve essere stringa o null');
   }
 
+  if (data.exposure != null && (!isNum(data.exposure) || data.exposure < 0 || data.exposure > 2)) {
+    return err('exposure deve essere un numero tra 0 e 2');
+  }
+
   // ELS: Check degli hotspots solo se il json contiene la proprietà
   // aggiungo un if che blocca tutto se non esiste la proprietà hotspots
   if (data.hotspots != null) {
@@ -687,10 +704,12 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
       backgroundcolor: data.backgroundcolor ?? shared.backgroundcolor,
       panoimage: data.panoimage ?? shared.panoimage,
       animation: data.animation ?? (data.model3D != null ? createDefaultAnimationState() : shared.animation),
+      exposure: data.exposure ?? shared.exposure,
       hotspots: data.hotspots ?? shared.hotspots
     };
 
     syncAnimationControls(shared.animation);
+    syncExposureControls(shared.exposure);
     viewer.init(shared);
 
     // ELS: Valutare se sia più pulito impostare anche bg e panoImage in init del viewer,
